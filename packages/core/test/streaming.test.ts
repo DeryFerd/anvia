@@ -1973,7 +1973,10 @@ describe("Agent streaming", () => {
       .map((line) => JSON.parse(line));
 
     expect(lines[0]).toEqual({ type: "text_delta", delta: "a" });
-    expect(lines[1]).toMatchObject({ type: "error", error: { message: "boom" } });
+    expect(lines[1]).toEqual({
+      type: "error",
+      error: { name: "Error", message: "boom" },
+    });
   });
 
   it("enforces exact maxTurns boundary on streaming execution", async () => {
