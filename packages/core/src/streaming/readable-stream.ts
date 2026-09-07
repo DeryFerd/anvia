@@ -37,7 +37,6 @@ function serializeError(error: unknown): unknown {
     return {
       name: error.name,
       message: error.message,
-      stack: error.stack,
     };
   }
 
