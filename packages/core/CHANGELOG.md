@@ -1,5 +1,15 @@
 # @anvia/core
 
+## 1.1.3
+
+### Patch Changes
+
+- e9fa1e8: Preserve source-module boundaries in the ESM build and import Zod's JSON Schema converter directly so bundlers can remove unrelated schema initialization from lightweight consumers such as `createTool`. Public exports, type declarations, and runtime behavior are unchanged.
+- 3d14e41: Omit stack traces from `toReadableStream` error events. Error JSON lines emitted
+  when the wrapped async iterable throws now carry only the error name and message,
+  matching the safe serializers already used by `@anvia/server` and Studio run
+  failure responses.
+
 ## 1.1.2
 
 ### Patch Changes
