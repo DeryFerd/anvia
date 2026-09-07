@@ -275,8 +275,25 @@ export type DockerSandboxToolName =
   | "stop_process"
   | "wait_for_port";
 
+/**
+ * List of known shell interpreters that can execute arbitrary commands via args.
+ * These are blocked by default unless explicitly allowed.
+ */
+export const shellInterpreters = [
+  "sh",
+  "bash",
+  "zsh",
+  "ksh",
+  "dash",
+  "ash",
+  "busybox",
+  "fish",
+  "csh",
+  "tcsh",
+] as const;
+
 export type DockerSandboxCommandPolicy =
-  | Readonly<{ mode: "allow"; values: readonly string[] }>
+  | Readonly<{ mode: "allow"; values: readonly string[]; allowShellInterpreters?: boolean }>
   | Readonly<{ mode: "block"; values: readonly string[] }>;
 
 export type DockerSandboxExecToolPolicy = Readonly<{

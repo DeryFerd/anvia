@@ -74,6 +74,110 @@ describe("createDockerSandboxTools", () => {
     );
   });
 
+  it("blocks shell interpreters by default to prevent command bypass via args", async () => {
+    const [tool] = createDockerSandboxTools({
+      sandbox: createRuntime(),
+      tools: ["exec_command"],
+      exec: {
+        commands: { mode: "allow", values: ["sh", "node"] },
+      },
+    });
+    if (tool === undefined) throw new Error("Expected exec_command tool.");
+
+    // sh is in the allow list, but args with -c can execute arbitrary commands
+    // This should be blocked by default
+    await expect(tool.call({ command: "sh", args: ["-c", "rm -rf /"] })).rejects.toMatchObject({
+      code: "tool_policy",
+    });
+  });
+
+  it("allows shell interpreters when explicitly permitted via allowShellInterpreters", async () => {
+    const sandbox = createRuntime();
+    const [tool] = createDockerSandboxTools({
+      sandbox,
+      tools: ["exec_command"],
+      exec: {
+        commands: { mode: "allow", values: ["sh", "node"], allowShellInterpreters: true },
+      },
+    });
+    if (tool === undefined) throw new Error("Expected exec_command tool.");
+
+    // With allowShellInterpreters: true, sh with args should work
+    await expect(tool.call({ command: "sh", args: ["-c", "echo hello"] })).resolves.toMatchObject({
+      status: "exited",
+    });
+    expect(sandbox.exec).toHaveBeenCalledWith({
+      command: "sh",
+      args: ["-c", "echo hello"],
+    });
+  });
+
+  it("allows shell interpreters in block mode when not in block list", async () => {
+    const sandbox = createRuntime();
+    const [tool] = createDockerSandboxTools({
+      sandbox,
+      tools: ["exec_command"],
+      exec: {
+        commands: { mode: "block", values: ["rm", "curl"] },
+      },
+    });
+    if (tool === undefined) throw new Error("Expected exec_command tool.");
+
+    // In block mode, shell interpreters are allowed if not in the block list
+    await expect(tool.call({ command: "sh", args: ["-c", "echo hello"] })).resolves.toMatchObject({
+      status: "exited",
+    });
+    expect(sandbox.exec).toHaveBeenCalledWith({
+      command: "sh",
+      args: ["-c", "echo hello"],
+    });
+  });
+
+  it("blocks path-qualified shell interpreters by default", async () => {
+    const [tool] = createDockerSandboxTools({
+      sandbox: createRuntime(),
+      tools: ["exec_command"],
+      exec: {
+        commands: { mode: "allow", values: ["/bin/sh", "/usr/bin/bash", "node"] },
+      },
+    });
+    if (tool === undefined) throw new Error("Expected exec_command tool.");
+
+    // Path-qualified shells should also be blocked by the basename check
+    await expect(tool.call({ command: "/bin/sh", args: ["-c", "rm -rf /"] })).rejects.toMatchObject(
+      {
+        code: "tool_policy",
+      },
+    );
+    await expect(
+      tool.call({ command: "/usr/bin/bash", args: ["-c", "rm -rf /"] }),
+    ).rejects.toMatchObject({
+      code: "tool_policy",
+    });
+  });
+
+  it("allows path-qualified shell interpreters when allowShellInterpreters is true", async () => {
+    const sandbox = createRuntime();
+    const [tool] = createDockerSandboxTools({
+      sandbox,
+      tools: ["exec_command"],
+      exec: {
+        commands: { mode: "allow", values: ["/bin/sh"], allowShellInterpreters: true },
+      },
+    });
+    if (tool === undefined) throw new Error("Expected exec_command tool.");
+
+    await expect(
+      tool.call({ command: "/bin/sh", args: ["-c", "echo hello"] }),
+    ).resolves.toMatchObject({
+      status: "exited",
+    });
+    expect(sandbox.exec).toHaveBeenCalledWith({
+      command: "/bin/sh",
+      args: ["-c", "echo hello"],
+    });
+  });
+
   it("delegates text file tools with bounded structured results", async () => {
     const sandbox = createRuntime();
     const tools = toolMap(
