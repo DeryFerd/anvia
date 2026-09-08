@@ -32,6 +32,13 @@ Networking is explicit. Use `{ mode: "none" }` or `{ mode: "bridge", ports: [...
 bind only to `127.0.0.1`. Runtime methods use object arguments, propagate abort signals, and expose
 command and process output as bytes. Tool wrappers decode UTF-8 strictly and return structured values.
 
+With `exec.commands.mode: "allow"`, both `exec_command` and `start_process` reject known shell
+executables by default, including path-qualified names such as `/bin/sh`. To permit an allowlisted
+shell, set `exec.commands.allowShellInterpreters` to the boolean `true`. Omitted or `false` keeps the
+guard enabled; non-boolean values such as `"false"` are rejected when creating tools. This guard
+checks executable names only: allowlisted runtimes such as Node.js or Python can still launch other
+commands, so the command policy does not restrict what those programs can execute.
+
 `resources.sharedMemoryMb` maps to a private Docker `/dev/shm` size. A security configuration may use
 explicit `dropCapabilities` and `addCapabilities` arrays, plus
 `seccompProfile: { type: "path", path }` with an absolute host path. These options are used by

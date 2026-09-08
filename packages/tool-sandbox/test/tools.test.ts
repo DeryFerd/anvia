@@ -133,6 +133,55 @@ describe("createDockerSandboxTools", () => {
     });
   });
 
+  it.each(["exec_command", "start_process"] as const)(
+    "requires boolean true to allow shells through %s",
+    async (toolName) => {
+      for (const allowShellInterpreters of [undefined, false, true]) {
+        const sandbox = createRuntime();
+        const [tool] = createDockerSandboxTools({
+          sandbox,
+          tools: [toolName],
+          exec: {
+            commands: {
+              mode: "allow",
+              values: ["sh"],
+              ...(allowShellInterpreters === undefined ? {} : { allowShellInterpreters }),
+            },
+          },
+        });
+        if (tool === undefined) throw new Error(`Expected ${toolName} tool.`);
+        const input = { command: "sh", args: ["-c", "echo hello"] };
+        const runtimeMethod = toolName === "exec_command" ? sandbox.exec : sandbox.startProcess;
+
+        if (allowShellInterpreters === true) {
+          await expect(tool.call(input)).resolves.toBeDefined();
+          expect(runtimeMethod).toHaveBeenCalledExactlyOnceWith(input);
+        } else {
+          await expect(tool.call(input)).rejects.toMatchObject({ code: "tool_policy" });
+          expect(runtimeMethod).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
+  it.each(["false", "true", "", 0, 1, null, {}, []].map((value) => ({ value })))(
+    "rejects non-boolean allowShellInterpreters eagerly: $value",
+    ({ value }) => {
+      const sandbox = createRuntime();
+      expect(() =>
+        createDockerSandboxTools({
+          sandbox,
+          tools: ["exec_command", "start_process"],
+          exec: {
+            commands: { mode: "allow", values: ["sh"], allowShellInterpreters: value } as never,
+          },
+        }),
+      ).toThrow("exec.commands.allowShellInterpreters must be a boolean.");
+      expect(sandbox.exec).not.toHaveBeenCalled();
+      expect(sandbox.startProcess).not.toHaveBeenCalled();
+    },
+  );
+
   it("blocks path-qualified shell interpreters by default", async () => {
     const [tool] = createDockerSandboxTools({
       sandbox: createRuntime(),
