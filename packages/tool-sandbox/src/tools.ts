@@ -11,6 +11,7 @@ import type {
   DockerSandboxRuntime,
   DockerSandboxToolName,
 } from "./types";
+import { shellInterpreters } from "./types";
 
 const allToolNames = [
   "exec_command",
@@ -505,6 +506,10 @@ function snapshotFactoryOptions(
       : Object.freeze({
           mode: options.exec.commands.mode,
           values: Object.freeze([...options.exec.commands.values]),
+          ...(options.exec.commands.mode === "allow" &&
+          options.exec.commands.allowShellInterpreters !== undefined
+            ? { allowShellInterpreters: options.exec.commands.allowShellInterpreters }
+            : {}),
         });
   let snapshot: CreateDockerSandboxToolsOptions = {
     sandbox: options.sandbox,
@@ -533,6 +538,13 @@ function validateCommandPolicy(policy: DockerSandboxCommandPolicy | undefined): 
   if (policy.mode !== "allow" && policy.mode !== "block") {
     throw toolPolicyError("exec.commands must use mode allow or block.");
   }
+  if (
+    policy.mode === "allow" &&
+    policy.allowShellInterpreters !== undefined &&
+    typeof policy.allowShellInterpreters !== "boolean"
+  ) {
+    throw toolPolicyError("exec.commands.allowShellInterpreters must be a boolean.");
+  }
   if (!Array.isArray(policy.values))
     throw toolPolicyError("exec.commands.values must be an array.");
   const seen = new Set<string>();
@@ -554,6 +566,19 @@ function assertCommandAllowed(
   const included = policy.values.includes(command);
   if ((policy.mode === "allow" && !included) || (policy.mode === "block" && included)) {
     throw toolPolicyError(`Command is rejected by sandbox tool policy: ${command}`);
+  }
+
+  // Block shell interpreters by default to prevent command bypass via args
+  // Shell interpreters like sh, bash, etc. can execute arbitrary commands
+  // through their arguments (e.g., sh -c "rm -rf /")
+  // Also block path-qualified shells (e.g., /bin/sh, /usr/bin/bash)
+  if (policy.mode === "allow" && policy.allowShellInterpreters !== true) {
+    const commandBasename = command.split("/").pop() ?? command;
+    if (shellInterpreters.includes(commandBasename as (typeof shellInterpreters)[number])) {
+      throw toolPolicyError(
+        `Command is rejected by sandbox tool policy: ${command} (shell interpreter not allowed)`,
+      );
+    }
   }
 }
 
