@@ -39,6 +39,21 @@ test("repository config versions every public package independently", () => {
   assert.doesNotThrow(() => assertWorkspaceInternalDependencies(packages));
 });
 
+test("public package discovery ignores stale node_modules in directories without manifests", () => {
+  const fixture = createReleaseFixture();
+  try {
+    const stale = path.join(fixture, "packages", "removed-package", "node_modules", "dependency");
+    mkdirSync(stale, { recursive: true });
+    writeJson(path.join(stale, "package.json"), { name: "stale-dependency", version: "1.0.0" });
+    assert.deepEqual(
+      findPublicPackages(fixture).map(({ packageJson }) => packageJson.name),
+      ["@fixture/a", "@fixture/b"],
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("independent config rejects fixed, linked, and ignored public packages", () => {
   const fixture = createReleaseFixture();
   const configPath = path.join(fixture, ".changeset", "config.json");
@@ -56,6 +71,119 @@ test("independent config rejects fixed, linked, and ignored public packages", ()
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test("workspace validation requires compatible peers and exact ordinary dependencies", () => {
+  const a = { packageJson: { name: "@fixture/a", version: "1.0.2" } };
+  const b = {
+    packageJson: {
+      name: "@fixture/b",
+      version: "2.4.0",
+      peerDependencies: { "@fixture/a": "workspace:^" },
+      dependencies: { "@fixture/a": "workspace:*" },
+      devDependencies: { "@fixture/a": "workspace:*" },
+    },
+  };
+  assert.doesNotThrow(() => assertWorkspaceInternalDependencies([a, b]));
+  b.packageJson.peerDependencies["@fixture/a"] = "workspace:*";
+  assert.throws(
+    () => assertWorkspaceInternalDependencies([a, b]),
+    /peerDependencies.*must use workspace:\^/,
+  );
+  b.packageJson.peerDependencies["@fixture/a"] = "workspace:^";
+  b.packageJson.dependencies["@fixture/a"] = "workspace:^";
+  assert.throws(
+    () => assertWorkspaceInternalDependencies([a, b]),
+    /dependencies.*must use workspace:\*/,
+  );
+});
+
+test("compatible workspace peers prevent automatic major bumps for minor releases", () => {
+  const fixture = createReleaseFixture();
+  try {
+    initializeGitFixture(fixture);
+    const manifestPath = path.join(fixture, "packages", "b", "package.json");
+    const manifest = readJson(manifestPath);
+    manifest.peerDependencies = { "@fixture/a": "workspace:*" };
+    manifest.devDependencies = { "@fixture/a": "workspace:*" };
+    writeJson(manifestPath, manifest);
+    writeChangeset(fixture, "a-minor", "minor", "Add an API to A.", ["a"]);
+    writeChangeset(fixture, "b-minor", "minor", "Add a feature to B.", ["b"]);
+    const output = path.join(fixture, "plan.json");
+    const plan = () => {
+      runCommand("pnpm", ["changeset", "status", "--output", output], fixture);
+      return readJson(output).releases;
+    };
+    assert.equal(plan().find(({ name }) => name === "@fixture/b").newVersion, "3.0.0");
+    manifest.peerDependencies["@fixture/a"] = "workspace:^";
+    writeJson(manifestPath, manifest);
+    const compatible = plan();
+    assert.equal(compatible.find(({ name }) => name === "@fixture/a").newVersion, "1.1.0");
+    assert.equal(compatible.find(({ name }) => name === "@fixture/b").newVersion, "2.5.0");
+    assert.equal(
+      compatible.some(({ type }) => type === "major"),
+      false,
+    );
+
+    // A real breaking dependency release must still be visible in the plan.
+    writeChangeset(fixture, "a-minor", "major", "Change A's contract.", ["a"]);
+    assert.equal(plan().find(({ name }) => name === "@fixture/b").type, "major");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "0.x minor boundary",
+    current: "0.2.3",
+    next: "0.3.0",
+    dependentNext: "3.0.0",
+    prerelease: false,
+  },
+  {
+    name: "prerelease tuple boundary",
+    current: "1.2.3-rc.0",
+    next: "1.3.0-rc.1",
+    dependentNext: "3.0.0-rc.0",
+    prerelease: true,
+  },
+]) {
+  test(`workspace peers release unchanged dependents across the ${scenario.name}`, () => {
+    const fixture = createReleaseFixture();
+    try {
+      initializeGitFixture(fixture);
+      const dependencyPath = path.join(fixture, "packages", "a", "package.json");
+      writeJson(dependencyPath, { ...readJson(dependencyPath), version: scenario.current });
+      const dependentPath = path.join(fixture, "packages", "b", "package.json");
+      writeJson(dependentPath, {
+        ...readJson(dependentPath),
+        peerDependencies: { "@fixture/a": "workspace:^" },
+      });
+      if (scenario.prerelease) {
+        writeJson(path.join(fixture, ".changeset", "pre.json"), {
+          mode: "pre",
+          tag: "rc",
+          changesets: [],
+          initialVersions: { "@fixture/a": "1.2.2", "@fixture/b": "2.4.0" },
+        });
+      }
+      // Only A changes: B must be released solely because its peer range is exceeded.
+      writeChangeset(fixture, "a-minor", "minor", "Add an API to A.", ["a"]);
+      const output = path.join(fixture, "plan.json");
+      runCommand("pnpm", ["changeset", "status", "--output", output], fixture);
+      const { releases } = readJson(output);
+      assert.equal(releases.find(({ name }) => name === "@fixture/a").newVersion, scenario.next);
+      const dependent = releases.find(({ name }) => name === "@fixture/b");
+      assert.ok(dependent, "Out-of-range peers must receive an implicit release");
+      assert.deepEqual(dependent.changesets, []);
+      assert.equal(dependent.type, "major");
+      assert.equal(dependent.oldVersion, "2.4.0");
+      assert.equal(dependent.newVersion, scenario.dependentNext);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+}
 
 test("preview versions use each package release plan version", () => {
   assert.equal(
@@ -203,7 +331,11 @@ function createReleaseFixture() {
     packageManager: "pnpm@11.0.4",
     workspaces: ["packages/*"],
   });
-  writeFileSync(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  // Fixtures borrow the repository install; pnpm must never reinstall through that symlink.
+  writeFileSync(
+    path.join(root, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\nverifyDepsBeforeRun: false\n",
+  );
   writeJson(path.join(root, ".changeset", "config.json"), {
     changelog: "@changesets/cli/changelog",
     commit: false,
