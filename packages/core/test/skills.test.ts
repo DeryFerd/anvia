@@ -178,49 +178,53 @@ describe("skills", () => {
     ).resolves.toEqual({ type: "text", value: "#!/bin/sh\necho helper\n" });
   });
 
-  it("executes skill scripts and reports failures", async () => {
-    const root = await tempRoot();
-    await writeSkill(root, "scripts", {
-      description: "Run scripts.",
-      scriptFiles: {
-        "ok.sh": "#!/bin/sh\necho stdout:$1\necho stderr:$2 >&2\n",
-        "fail.sh": "#!/bin/sh\necho no >&2\nexit 2\n",
-        "slow.sh": "#!/bin/sh\nsleep 2\n",
-      },
-    });
-    const skillSet = await loadSkills(skill.local(root));
-    const agent = new Agent({
-      id: "skills",
-      model: new QueueModel([]),
-      tools: skillSet.tools,
-    });
+  // POSIX shebang scripts cannot be spawned directly on Windows (spawn EFTYPE).
+  it.skipIf(process.platform === "win32")(
+    "executes skill scripts and reports failures",
+    async () => {
+      const root = await tempRoot();
+      await writeSkill(root, "scripts", {
+        description: "Run scripts.",
+        scriptFiles: {
+          "ok.sh": "#!/bin/sh\necho stdout:$1\necho stderr:$2 >&2\n",
+          "fail.sh": "#!/bin/sh\necho no >&2\nexit 2\n",
+          "slow.sh": "#!/bin/sh\nsleep 2\n",
+        },
+      });
+      const skillSet = await loadSkills(skill.local(root));
+      const agent = new Agent({
+        id: "skills",
+        model: new QueueModel([]),
+        tools: skillSet.tools,
+      });
 
-    await expect(
-      agent.callTool(
-        "run_skill_script",
-        JSON.stringify({
-          skillName: "scripts",
-          scriptPath: "ok.sh",
-          args: ["one", "two"],
-        }),
-      ),
-    ).resolves.toEqual({
-      type: "text",
-      value: "stdout:\nstdout:one\n\n\nstderr:\nstderr:two\n",
-    });
-    await expect(
-      agent.callTool(
-        "run_skill_script",
-        JSON.stringify({ skillName: "scripts", scriptPath: "fail.sh" }),
-      ),
-    ).rejects.toThrow("Skill script exited with code 2");
-    await expect(
-      agent.callTool(
-        "run_skill_script",
-        JSON.stringify({ skillName: "scripts", scriptPath: "slow.sh", timeoutMs: 50 }),
-      ),
-    ).rejects.toThrow("Skill script timed out after 50ms");
-  });
+      await expect(
+        agent.callTool(
+          "run_skill_script",
+          JSON.stringify({
+            skillName: "scripts",
+            scriptPath: "ok.sh",
+            args: ["one", "two"],
+          }),
+        ),
+      ).resolves.toEqual({
+        type: "text",
+        value: "stdout:\nstdout:one\n\n\nstderr:\nstderr:two\n",
+      });
+      await expect(
+        agent.callTool(
+          "run_skill_script",
+          JSON.stringify({ skillName: "scripts", scriptPath: "fail.sh" }),
+        ),
+      ).rejects.toThrow("Skill script exited with code 2");
+      await expect(
+        agent.callTool(
+          "run_skill_script",
+          JSON.stringify({ skillName: "scripts", scriptPath: "slow.sh", timeoutMs: 50 }),
+        ),
+      ).rejects.toThrow("Skill script timed out after 50ms");
+    },
+  );
 
   it("rejects skill path traversal", async () => {
     const root = await tempRoot();
