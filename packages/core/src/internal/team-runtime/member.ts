@@ -6,6 +6,7 @@ import type {
 import type { AgentOutcome, AgentSteerInput } from "../../agent/run-types";
 import type { Message, UserMessage } from "../../completion";
 import { parseMessage, parseMessages, Usage } from "../../completion";
+import type { Writable } from "../type-utils";
 import type { AgentRun } from "../agent-runtime/agent-run";
 import type { Agent } from "../../agent/agent";
 import { lifecycleSnapshot } from "../../agent/lifecycle";
@@ -40,17 +41,18 @@ export type TeamMember = {
 };
 
 export function memberSummary(member: TeamMember): AgentTeamMemberSummary {
-  return {
+  const summary: Writable<AgentTeamMemberSummary> = {
     instanceId: member.instanceId,
     agentId: member.agent.id,
     name: member.name,
     depth: member.depth,
     status: member.status,
     usage: lifecycleSnapshot(member.usage),
-    ...(member.parentInstanceId === undefined ? {} : { parentInstanceId: member.parentInstanceId }),
-    ...(member.outcome === undefined ? {} : { outcome: lifecycleSnapshot(member.outcome) }),
-    ...(member.error === undefined ? {} : { error: member.error }),
   };
+  if (member.parentInstanceId !== undefined) summary.parentInstanceId = member.parentInstanceId;
+  if (member.outcome !== undefined) summary.outcome = lifecycleSnapshot(member.outcome);
+  if (member.error !== undefined) summary.error = member.error;
+  return summary;
 }
 
 export function steeringMessages(input: AgentSteerInput): UserMessage[] {
