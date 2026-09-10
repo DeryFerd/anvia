@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { build } from "tsup";
 import { expect, it } from "vitest";
@@ -16,7 +16,8 @@ it("tree-shakes createTool from root and tool entrypoints without changing execu
     const outDir = join(temporaryDir, "dist");
     await build({
       ...config,
-      entry: config.entry.map((entry) => join(packageDir, entry)),
+      // tsup glob expansion requires forward slashes; Windows joins produce backslashes.
+      entry: config.entry.map((entry) => join(packageDir, entry).replaceAll("\\", "/")),
       outDir,
       dts: false,
       config: false,
@@ -34,7 +35,7 @@ it("tree-shakes createTool from root and tool entrypoints without changing execu
       );
       const consumerDir = join(temporaryDir, name);
       await build({
-        entry: [consumer],
+        entry: [consumer.replaceAll("\\", "/")],
         outDir: consumerDir,
         format: ["esm"],
         platform: "node",
@@ -48,12 +49,14 @@ it("tree-shakes createTool from root and tool entrypoints without changing execu
       // Include dependencies: this ceiling catches both namespace retention and
       // unrelated schema initialization leaking across generated module boundaries.
       expect((await readFile(bundle)).byteLength).toBeLessThan(30_000);
+      // Windows requires file:// URLs for ESM imports of absolute paths.
+      const bundleUrl = pathToFileURL(bundle).href;
       const { stdout } = await execFileAsync(
         process.execPath,
         [
           "--input-type=module",
           "-e",
-          `import { createTool } from ${JSON.stringify(bundle)};
+          `import { createTool } from ${JSON.stringify(bundleUrl)};
 import { z } from "zod";
 const tool = createTool({
   name: "double", description: "Double a number",
