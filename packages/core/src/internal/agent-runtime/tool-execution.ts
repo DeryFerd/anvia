@@ -105,6 +105,20 @@ export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<Tool
 type ToolExecutionAgent = Pick<Agent, "id" | "getTool" | "callTool" | "middlewares">;
 type ToolExecutionLifecycle = Pick<AgentLifecycle, "onToolStart" | "onToolFinish">;
 
+function sanitizeToolErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    // Return only name and message, omitting stack traces and internal details
+    return `${error.name}: ${error.message}`;
+  }
+
+  if (isJsonValue(error)) {
+    return JSON.stringify(error);
+  }
+
+  // Non-Error thrown values
+  return String(error);
+}
+
 export class ToolCallExecutor {
   constructor(
     private readonly agent: ToolExecutionAgent,
@@ -771,7 +785,7 @@ export class ToolCallExecutor {
     return {
       output: {
         type: "error-text",
-        value: error instanceof Error ? error.toString() : String(error),
+        value: sanitizeToolErrorMessage(error),
       },
       failed: true,
       error,
