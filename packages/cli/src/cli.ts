@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { addRegistryItem, initializeProject, isRegistryItemName, registryItemNames } from "./index";
+import {
+  addRegistryItem,
+  closestRegistryItemName,
+  initializeProject,
+  isRegistryItemName,
+  registryItemNames,
+  updateInstalledItems,
+} from "./index";
 
 function main(args: string[]): void {
   const [command, ...commandArgs] = args;
@@ -38,9 +45,62 @@ function main(args: string[]): void {
     return;
   }
 
+  if (command === "update") {
+    const items = positional.map((value) => {
+      if (isRegistryItemName(value)) return value;
+      const suggestion = closestRegistryItemName(value);
+      const suffix = suggestion === undefined ? "" : ` Did you mean "${suggestion}"?`;
+      throw new Error(
+        `Unknown registry item "${value}".${suffix} Choose an item: ${registryItemNames.join(", ")}.`,
+      );
+    });
+    const overwrite = commandArgs.includes("--overwrite");
+    const options: Parameters<typeof updateInstalledItems>[0] = { overwrite };
+    if (cwd !== undefined) options.cwd = cwd;
+    if (items.length > 0) options.items = items;
+    const { report, updated } = updateInstalledItems(options);
+    const updatedPaths = new Set(updated);
+    if (overwrite === true) {
+      for (const item of report) {
+        if (!item.installed) {
+          console.log(`Anvia ${item.name}: not installed. Use \`anvia add ${item.name}\` first.`);
+          continue;
+        }
+        const changed = item.files.some(
+          (file) => file.status !== "up-to-date" && updatedPaths.has(file.path),
+        );
+        console.log(`Anvia ${item.name}: ${changed ? "updated" : "up to date"}.`);
+      }
+      console.log(
+        updated.length === 0
+          ? "All installed Anvia components are up to date."
+          : `Updated ${updated.length} ${updated.length === 1 ? "file" : "files"}.`,
+      );
+      return;
+    }
+    let changeCount = 0;
+    for (const item of report) {
+      if (!item.installed) {
+        console.log(`Anvia ${item.name}: not installed.`);
+        continue;
+      }
+      for (const file of item.files) {
+        if (file.status !== "up-to-date") changeCount += 1;
+        console.log(`Anvia ${item.name}: ${file.status} ${file.path}`);
+      }
+    }
+    console.log(
+      changeCount === 0
+        ? "Everything is up to date."
+        : `Found ${changeCount} out-of-date ${changeCount === 1 ? "file" : "files"}. Re-run with --overwrite to apply.`,
+    );
+    return;
+  }
+
   console.log(`Usage:
   anvia init [next|vite] [--cwd <path>] [--force]
-  anvia add <${registryItemNames.join("|")}> [--cwd <path>] [--overwrite]`);
+  anvia add <${registryItemNames.join("|")}> [--cwd <path>] [--overwrite]
+  anvia update [${registryItemNames.join("|")}] [--cwd <path>] [--overwrite]`);
 }
 
 function optionValue(args: string[], name: string): string | undefined {
