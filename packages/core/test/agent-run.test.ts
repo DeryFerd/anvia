@@ -18,6 +18,7 @@ import {
   parseAgentContinuation,
   requestToolApproval,
   type ToolCallContext,
+  ToolCallError,
   ToolOutput,
   Usage,
   withInternalAgentRunOptions,
@@ -2127,6 +2128,86 @@ describe("Agent execution", () => {
           id: "call_1",
           toolName: "fail",
           content: [{ type: "text", text: "ToolCallError: tool failed" }],
+        },
+      ]),
+    );
+  });
+
+  it("sanitizes tool error messages to prevent information disclosure", async () => {
+    // ToolCallError subclass with overridden toString() that leaks extra data.
+    // asToolCallError passes ToolCallError instances through unchanged, so
+    // the custom toString() reaches handleToolError. Without sanitization,
+    // error.toString() returns the full string including the synthetic leak.
+    class LeakyToolCallError extends ToolCallError {
+      toString() {
+        return `${this.name}: ${this.message}\n    at /internal/secret.ts:42\n    password=hunter2`;
+      }
+    }
+
+    const failingTool = createTool({
+      name: "leak_test",
+      description: "Test error sanitization",
+      inputSchema: z.object({}),
+      outputSchema: z.string(),
+      execute() {
+        throw new LeakyToolCallError("database connection failed");
+      },
+    });
+    const model = new QueueModel([
+      response([AssistantContent.toolCall("call_1", "leak_test", {})]),
+      response([AssistantContent.text("handled")]),
+    ]);
+    const agent = new Agent({ id: "test-agent", model, tools: [failingTool] });
+
+    await expect(agent.generate({ prompt: "test" })).resolves.toMatchObject({ output: "handled" });
+
+    // Without sanitization, toString() would return:
+    //   "LeakyToolCallError: database connection failed\n    at /internal/secret.ts:42\n    password=hunter2"
+    // With sanitization, only name and message are kept.
+    expect(model.requests[1]?.chatHistory.at(-1)).toEqual(
+      Message.tool([
+        {
+          type: "tool_result",
+          id: "call_1",
+          toolName: "leak_test",
+          content: [
+            {
+              type: "text",
+              text: "ToolCallError: database connection failed",
+            },
+          ],
+        },
+      ]),
+    );
+  });
+
+  it("passes non-Error thrown values to the model without JSON quoting", async () => {
+    // Custom callTool implementations bypass asToolCallError wrapping, so a
+    // raw thrown string reaches handleToolError directly. Strings are JSON
+    // values, but they must be passed through as-is rather than
+    // JSON.stringify-quoted.
+    class StringThrowingAgent extends Agent {
+      override callTool(): never {
+        throw "raw failure";
+      }
+    }
+    const model = new QueueModel([
+      response([AssistantContent.toolCall("call_1", "missing_tool", {})]),
+      response([AssistantContent.text("handled")]),
+    ]);
+    const agent = new StringThrowingAgent({ id: "test-agent", model, tools: [] });
+
+    await expect(agent.generate({ prompt: "test" })).resolves.toMatchObject({
+      output: "handled",
+    });
+
+    expect(model.requests[1]?.chatHistory.at(-1)).toEqual(
+      Message.tool([
+        {
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "missing_tool",
+          output: { type: "error-text", value: "raw failure" },
         },
       ]),
     );
