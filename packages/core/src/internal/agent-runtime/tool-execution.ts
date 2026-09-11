@@ -111,6 +111,11 @@ function sanitizeToolErrorMessage(error: unknown): string {
     return `${error.name}: ${error.message}`;
   }
 
+  if (typeof error === "string") {
+    // Strings are JSON values, but JSON.stringify would add surrounding quotes.
+    return error;
+  }
+
   if (isJsonValue(error)) {
     return JSON.stringify(error);
   }

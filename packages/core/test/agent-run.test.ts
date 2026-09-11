@@ -2181,6 +2181,38 @@ describe("Agent execution", () => {
     );
   });
 
+  it("passes non-Error thrown values to the model without JSON quoting", async () => {
+    // Custom callTool implementations bypass asToolCallError wrapping, so a
+    // raw thrown string reaches handleToolError directly. Strings are JSON
+    // values, but they must be passed through as-is rather than
+    // JSON.stringify-quoted.
+    class StringThrowingAgent extends Agent {
+      override callTool(): never {
+        throw "raw failure";
+      }
+    }
+    const model = new QueueModel([
+      response([AssistantContent.toolCall("call_1", "missing_tool", {})]),
+      response([AssistantContent.text("handled")]),
+    ]);
+    const agent = new StringThrowingAgent({ id: "test-agent", model, tools: [] });
+
+    await expect(agent.generate({ prompt: "test" })).resolves.toMatchObject({
+      output: "handled",
+    });
+
+    expect(model.requests[1]?.chatHistory.at(-1)).toEqual(
+      Message.tool([
+        {
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "missing_tool",
+          output: { type: "error-text", value: "raw failure" },
+        },
+      ]),
+    );
+  });
+
   it("keeps low-level hook action helpers available", () => {
     expect(cancelRun("blocked")).toEqual({ type: "terminate", reason: "blocked" });
     expect(requestToolApproval({ reason: "review" })).toEqual({
