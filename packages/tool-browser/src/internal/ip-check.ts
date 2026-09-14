@@ -55,6 +55,9 @@ function isBlockedIpv4(a: number, b: number, c: number, d: number): boolean {
   // 10.0.0.0/8 - Private network
   if (a === 10) return true;
 
+  // 100.64.0.0/10 - Carrier-grade NAT (shared address space)
+  if (a === 100 && b >= 64 && b <= 127) return true;
+
   // 127.0.0.0/8 - Loopback
   if (a === 127) return true;
 
@@ -64,8 +67,26 @@ function isBlockedIpv4(a: number, b: number, c: number, d: number): boolean {
   // 172.16.0.0/12 - Private network
   if (a === 172 && b >= 16 && b <= 31) return true;
 
+  // 192.0.0.0/24 - IETF protocol assignments
+  if (a === 192 && b === 0 && c === 0) return true;
+
+  // 192.0.2.0/24 - Documentation/test-net-1
+  if (a === 192 && b === 0 && c === 2) return true;
+
+  // 192.88.99.0/24 - 6to4 relay anycast
+  if (a === 192 && b === 88 && c === 99) return true;
+
   // 192.168.0.0/16 - Private network
   if (a === 192 && b === 168) return true;
+
+  // 198.18.0.0/15 - Benchmarking
+  if (a === 198 && (b === 18 || b === 19)) return true;
+
+  // 198.51.100.0/24 - Documentation/test-net-2
+  if (a === 198 && b === 51 && c === 100) return true;
+
+  // 203.0.113.0/24 - Documentation/test-net-3
+  if (a === 203 && b === 0 && c === 113) return true;
 
   // 224.0.0.0/4 - Multicast
   if (a >= 224 && a <= 239) return true;
@@ -83,9 +104,8 @@ function isBlockedIpv4(a: number, b: number, c: number, d: number): boolean {
 function expandIpv6(addr: string): string | null {
   // Handle IPv4-mapped IPv6: ::ffff:x.x.x.x
   const v4MappedMatch = addr.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
-  if (v4MappedMatch) {
-    const v4 = v4MappedMatch[1];
-    const parts = v4.split(".").map(Number);
+  if (v4MappedMatch?.[1] !== undefined) {
+    const parts = v4MappedMatch[1].split(".").map(Number);
     if (parts.length === 4 && parts.every((p) => p >= 0 && p <= 255)) {
       // Return as blocked IPv4 address check
       return `__v4:${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}`;
@@ -138,6 +158,9 @@ function isBlockedIpv6(expanded: string): boolean {
 
   // fe80::/10 - Link-local (g0 in range 0xFE80..0xFEBF)
   if (g0 >= 0xfe80 && g0 <= 0xfebf) return true;
+
+  // fec0::/10 - Site-local (deprecated, g0 in range 0xFEC0..0xFEFF)
+  if (g0 >= 0xfec0 && g0 <= 0xfeff) return true;
 
   // fc00::/7 - Unique local (g0 in range 0xFC00..0xFDFF)
   if (g0 >= 0xfc00 && g0 <= 0xfdff) return true;
