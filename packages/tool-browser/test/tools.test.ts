@@ -39,6 +39,131 @@ describe("createBrowserTools", () => {
     );
   });
 
+  describe("SSRF protection", () => {
+    it("blocks localhost URLs even with allow-all-http policy", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Block localhost
+      await expect(navigate?.call({ url: "http://localhost:8080" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block 127.0.0.1
+      await expect(navigate?.call({ url: "http://127.0.0.1:3000" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block 127.x.x.x range
+      await expect(navigate?.call({ url: "http://127.0.0.2" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      expect(command).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: "navigate" }),
+        expect.anything(),
+      );
+    });
+
+    it("blocks private IP ranges even with allow-all-http policy", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Block 10.0.0.0/8
+      await expect(navigate?.call({ url: "http://10.0.0.1" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://10.255.255.255" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block 172.16.0.0/12
+      await expect(navigate?.call({ url: "http://172.16.0.1" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://172.31.255.255" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block 192.168.0.0/16
+      await expect(navigate?.call({ url: "http://192.168.1.1" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://192.168.255.255" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      expect(command).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: "navigate" }),
+        expect.anything(),
+      );
+    });
+
+    it("blocks link-local and reserved IP ranges", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Block 169.254.0.0/16 (link-local, AWS metadata)
+      await expect(navigate?.call({ url: "http://169.254.169.254" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block 0.0.0.0/8
+      await expect(navigate?.call({ url: "http://0.0.0.0" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      expect(command).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: "navigate" }),
+        expect.anything(),
+      );
+    });
+
+    it("allows public IP addresses with allow-all-http policy", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Allow public IPs (these should NOT be blocked)
+      const result1 = await navigate?.call({ url: "http://8.8.8.8" });
+      expect(result1).toMatchObject({ url: "http://8.8.8.8" });
+
+      const result2 = await navigate?.call({ url: "http://1.1.1.1" });
+      expect(result2).toMatchObject({ url: "http://1.1.1.1" });
+    });
+
+    it("allows public domains with allow-all-http policy", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Allow public domains (these should NOT be blocked)
+      const result1 = await navigate?.call({ url: "http://example.com" });
+      expect(result1).toMatchObject({ url: "http://example.com" });
+
+      const result2 = await navigate?.call({ url: "https://github.com" });
+      expect(result2).toMatchObject({ url: "https://github.com" });
+    });
+  });
+
   it("reports navigation policy rejection from redirects as navigation_blocked", async () => {
     const { connection, command } = fakeConnection();
     const [navigate] = createBrowserTools({
@@ -105,10 +230,16 @@ describe("createBrowserTools", () => {
 
 function fakeConnection(control = new BrowserControlState()) {
   const tabId = "11111111-1111-4111-8111-111111111111";
-  const command = vi.fn(async (request: { method: string }, _options?: unknown) => {
+  const command = vi.fn(async (request: { method: string; params?: any }, _options?: unknown) => {
     switch (request.method) {
       case "listTabs":
         return [{ id: tabId, title: "Example", url: "https://example.com", selected: true }];
+      case "navigate":
+        return {
+          tabId,
+          title: "Navigation Result",
+          url: request.params?.url || "https://example.com",
+        };
       case "snapshot":
         return {
           tabId,

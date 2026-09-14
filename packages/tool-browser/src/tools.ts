@@ -306,7 +306,99 @@ function isNavigationAllowed(value: string, policy: BrowserNavigationPolicy): bo
   } catch {
     return false;
   }
+
+  // Block private/internal IPs regardless of policy to prevent SSRF
+  if (isPrivateOrReservedHost(url.hostname)) {
+    return false;
+  }
+
   return policy.mode === "allow-all-http" || policy.origins.includes(url.origin);
+}
+
+function isPrivateOrReservedHost(hostname: string): boolean {
+  // Block localhost and variations
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return true;
+  }
+
+  // Try to parse as IP address
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1, 5).map(Number);
+
+    // Validate octets are in range 0-255
+    if (octets.some((octet) => octet > 255)) {
+      return true; // Invalid IP, block it
+    }
+
+    const a = octets[0];
+    const b = octets[1];
+    const c = octets[2];
+    const d = octets[3];
+
+    // Guard: ensure all octets are defined
+    if (a === undefined || b === undefined || c === undefined || d === undefined) {
+      return true;
+    }
+
+    // 0.0.0.0/8 - Current network (only valid as source address)
+    if (a === 0) {
+      return true;
+    }
+
+    // 10.0.0.0/8 - Private network
+    if (a === 10) {
+      return true;
+    }
+
+    // 127.0.0.0/8 - Loopback
+    if (a === 127) {
+      return true;
+    }
+
+    // 169.254.0.0/16 - Link-local (includes AWS metadata at 169.254.169.254)
+    if (a === 169 && b === 254) {
+      return true;
+    }
+
+    // 172.16.0.0/12 - Private network
+    if (a === 172 && b >= 16 && b <= 31) {
+      return true;
+    }
+
+    // 192.168.0.0/16 - Private network
+    if (a === 192 && b === 168) {
+      return true;
+    }
+
+    // 224.0.0.0/4 - Multicast
+    if (a >= 224 && a <= 239) {
+      return true;
+    }
+
+    // 240.0.0.0/4 - Reserved
+    if (a >= 240) {
+      return true;
+    }
+  }
+
+  // Block IPv6 localhost
+  if (hostname === "::1" || hostname === "[::1]") {
+    return true;
+  }
+
+  // Block IPv6 link-local (fe80::/10)
+  if (hostname.startsWith("fe80:") || hostname.startsWith("[fe80:")) {
+    return true;
+  }
+
+  // Block IPv6 unique local (fc00::/7)
+  if (hostname.startsWith("fc") || hostname.startsWith("fd") || 
+      hostname.startsWith("[fc") || hostname.startsWith("[fd")) {
+    return true;
+  }
+
+  return false;
 }
 
 function parseHttpUrl(value: string): URL {
