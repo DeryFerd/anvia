@@ -48,7 +48,7 @@ export function isPrivateOrReservedHost(hostname: string): boolean {
   return false;
 }
 
-function isBlockedIpv4(a: number, b: number, c: number, d: number): boolean {
+function isBlockedIpv4(a: number, b: number, c: number, _d: number): boolean {
   // 0.0.0.0/8 - Current network (only valid as source address)
   if (a === 0) return true;
 
@@ -66,9 +66,6 @@ function isBlockedIpv4(a: number, b: number, c: number, d: number): boolean {
 
   // 172.16.0.0/12 - Private network
   if (a === 172 && b >= 16 && b <= 31) return true;
-
-  // 192.0.0.0/24 - IETF protocol assignments
-  if (a === 192 && b === 0 && c === 0) return true;
 
   // 192.0.2.0/24 - Documentation/test-net-1
   if (a === 192 && b === 0 && c === 2) return true;

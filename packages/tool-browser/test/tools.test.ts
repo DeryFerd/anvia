@@ -219,24 +219,26 @@ describe("createBrowserTools", () => {
       });
 
       // Override the navigate handler to return a private-IP response URL
-      command.mockImplementation(async (request: { method: string; params?: any }) => {
-        if (request.method === "navigate") {
-          return {
-            tabId: "11111111-1111-4111-8111-111111111111",
-            title: "Redirected",
-            url: "http://127.0.0.1/admin",
-          };
-        }
-        // Default: return standard listTabs response
-        return [
-          {
-            id: "11111111-1111-4111-8111-111111111111",
-            title: "Example",
-            url: "https://example.com",
-            selected: true,
-          },
-        ];
-      });
+      command.mockImplementation(
+        async (request: { method: string; params?: Record<string, unknown> }) => {
+          if (request.method === "navigate") {
+            return {
+              tabId: "11111111-1111-4111-8111-111111111111",
+              title: "Redirected",
+              url: "http://127.0.0.1/admin",
+            };
+          }
+          // Default: return standard listTabs response
+          return [
+            {
+              id: "11111111-1111-4111-8111-111111111111",
+              title: "Example",
+              url: "https://example.com",
+              selected: true,
+            },
+          ];
+        },
+      );
 
       // The tool-level assertNavigationAllowed(result.url) should block this
       await expect(
@@ -348,33 +350,35 @@ describe("createBrowserTools", () => {
 
 function fakeConnection(control = new BrowserControlState()) {
   const tabId = "11111111-1111-4111-8111-111111111111";
-  const command = vi.fn(async (request: { method: string; params?: any }, _options?: unknown) => {
-    switch (request.method) {
-      case "listTabs":
-        return [{ id: tabId, title: "Example", url: "https://example.com", selected: true }];
-      case "navigate":
-        return {
-          tabId,
-          title: "Navigation Result",
-          url: request.params?.url || "https://example.com",
-        };
-      case "snapshot":
-        return {
-          tabId,
-          title: "Example",
-          url: "https://example.com",
-          snapshot: "- document",
-          truncated: false,
-        };
-      case "screenshot":
-        return {
-          metadata: { tabId, title: "Example", url: "https://example.com" },
-          pngBase64: Buffer.from("png").toString("base64"),
-        };
-      default:
-        return undefined;
-    }
-  });
+  const command = vi.fn(
+    async (request: { method: string; params?: Record<string, unknown> }, _options?: unknown) => {
+      switch (request.method) {
+        case "listTabs":
+          return [{ id: tabId, title: "Example", url: "https://example.com", selected: true }];
+        case "navigate":
+          return {
+            tabId,
+            title: "Navigation Result",
+            url: request.params?.url || "https://example.com",
+          };
+        case "snapshot":
+          return {
+            tabId,
+            title: "Example",
+            url: "https://example.com",
+            snapshot: "- document",
+            truncated: false,
+          };
+        case "screenshot":
+          return {
+            metadata: { tabId, title: "Example", url: "https://example.com" },
+            pngBase64: Buffer.from("png").toString("base64"),
+          };
+        default:
+          return undefined;
+      }
+    },
+  );
   const backend: AutomationBackend = {
     closed: false,
     command: async <T>(
