@@ -131,6 +131,124 @@ describe("createBrowserTools", () => {
       );
     });
 
+    it("blocks IPv6 loopback, link-local, and unique-local addresses", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Block ::1 (loopback)
+      await expect(navigate?.call({ url: "http://[::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block fe80::/10 link-local range
+      await expect(navigate?.call({ url: "http://[fe80::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://[fe90::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://[febf::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block fc00::/7 unique-local range
+      await expect(navigate?.call({ url: "http://[fc00::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://[fd00::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // Block multicast ff00::/8
+      await expect(navigate?.call({ url: "http://[ff02::1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      expect(command).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: "navigate" }),
+        expect.anything(),
+      );
+    });
+
+    it("blocks IPv4-mapped IPv6 addresses of blocked ranges", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // ::ffff:127.0.0.1 = loopback
+      await expect(navigate?.call({ url: "http://[::ffff:127.0.0.1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // ::ffff:10.0.0.1 = private
+      await expect(navigate?.call({ url: "http://[::ffff:10.0.0.1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // ::ffff:192.168.1.1 = private
+      await expect(navigate?.call({ url: "http://[::ffff:192.168.1.1]" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // ::ffff:169.254.169.254 = link-local (AWS metadata)
+      await expect(
+        navigate?.call({ url: "http://[::ffff:169.254.169.254]" }),
+      ).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      expect(command).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: "navigate" }),
+        expect.anything(),
+      );
+    });
+
+    it("blocks response URL pointing to private IP after successful navigation", async () => {
+      const { connection, command } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Override the navigate handler to return a private-IP response URL
+      command.mockImplementation(async (request: { method: string; params?: any }) => {
+        if (request.method === "navigate") {
+          return {
+            tabId: "11111111-1111-4111-8111-111111111111",
+            title: "Redirected",
+            url: "http://127.0.0.1/admin",
+          };
+        }
+        // Default: return standard listTabs response
+        return [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            title: "Example",
+            url: "https://example.com",
+            selected: true,
+          },
+        ];
+      });
+
+      // The tool-level assertNavigationAllowed(result.url) should block this
+      await expect(
+        navigate?.call({
+          tabId: "11111111-1111-4111-8111-111111111111",
+          url: "http://example.com",
+        }),
+      ).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+    });
+
     it("allows public IP addresses with allow-all-http policy", async () => {
       const { connection } = fakeConnection();
       const [navigate] = createBrowserTools({
