@@ -27,6 +27,12 @@ export type McpStreamableHttpTransport = {
   readonly authProvider?: OAuthClientProvider | undefined;
   readonly reconnectionOptions?: StreamableHTTPReconnectionOptions | undefined;
   readonly sessionId?: string | undefined;
+  /**
+   * Maximum bytes per JSON-RPC response message: the whole body for JSON
+   * responses and each SSE event for event streams. Defaults to 10 MiB,
+   * matching the stdio transport's default buffer size.
+   */
+  readonly maxBufferSize?: number | undefined;
 };
 
 export type McpTransport = Transport;

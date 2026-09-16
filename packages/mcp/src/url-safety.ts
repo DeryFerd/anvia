@@ -154,6 +154,133 @@ export function createSafeMcpFetch(): FetchLike {
   };
 }
 
+/** Default per-message response bound, matching the stdio transport's buffer default. */
+export const defaultMcpMaxBufferSize = 10 * 1024 * 1024;
+
+/**
+ * Wraps a fetch function so each JSON-RPC response message stays within
+ * `maxBufferSize` bytes: the whole body for regular responses, and each SSE
+ * event for `text/event-stream` responses. Without a bound, an untrusted MCP
+ * server can stream unbounded data into the process.
+ */
+export function createBoundedMcpFetch(fetchRequest: FetchLike, maxBufferSize: number): FetchLike {
+  if (!Number.isSafeInteger(maxBufferSize) || maxBufferSize <= 0) {
+    throw new TypeError("MCP maxBufferSize must be a positive integer");
+  }
+  return async (input, init) => {
+    const response = await fetchRequest(input, init);
+    return limitMcpResponseMessageSize(response, maxBufferSize);
+  };
+}
+
+async function limitMcpResponseMessageSize(
+  response: Awaited<ReturnType<FetchLike>>,
+  maxBufferSize: number,
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  const body = response.body;
+  if (body === null) return response;
+
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const contentLength = Number(response.headers.get("content-length"));
+  if (!Number.isNaN(contentLength) && contentLength > maxBufferSize) {
+    await body.cancel().catch(() => {});
+    throw mcpMaxBufferSizeError(maxBufferSize);
+  }
+
+  const limited = body.pipeThrough(
+    contentType === "text/event-stream"
+      ? createEventStreamLimitTransform(maxBufferSize)
+      : createTotalLimitTransform(maxBufferSize),
+  );
+  return new Response(limited, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  }) as Awaited<ReturnType<FetchLike>>;
+}
+
+function createTotalLimitTransform(maxBufferSize: number): TransformStream<Uint8Array, Uint8Array> {
+  let totalBytes = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      totalBytes += chunk.byteLength;
+      assertMcpMaxBufferSize(totalBytes, maxBufferSize);
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+/**
+ * Limits each SSE event (the bytes between blank-line separators) instead of
+ * the whole stream, so long-lived streams with many small messages keep
+ * flowing. Boundaries can straddle chunk edges, so up to three trailing bytes
+ * are carried into the next chunk to complete the match.
+ */
+function createEventStreamLimitTransform(
+  maxBufferSize: number,
+): TransformStream<Uint8Array, Uint8Array> {
+  let eventBytes = 0;
+  let carry: Uint8Array | undefined;
+  return new TransformStream({
+    transform(chunk, controller) {
+      const data = carry === undefined ? chunk : concatBytes(carry, chunk);
+      const carryLength = carry?.byteLength ?? 0;
+      carry = undefined;
+      let cursor = 0;
+      while (true) {
+        const boundary = findEventBoundary(data, cursor);
+        if (boundary === undefined) break;
+        const boundaryEnd = boundary.index + boundary.length;
+        const countStart = Math.max(cursor, carryLength);
+        if (boundaryEnd > countStart) {
+          eventBytes += boundaryEnd - countStart;
+        }
+        assertMcpMaxBufferSize(eventBytes, maxBufferSize);
+        eventBytes = 0;
+        cursor = boundaryEnd;
+      }
+      const tailStart = Math.max(cursor, carryLength);
+      if (data.byteLength > tailStart) {
+        eventBytes += data.byteLength - tailStart;
+      }
+      assertMcpMaxBufferSize(eventBytes, maxBufferSize);
+      carry = data.subarray(Math.max(data.byteLength - 3, 0));
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+function findEventBoundary(
+  data: Uint8Array,
+  from: number,
+): { index: number; length: number } | undefined {
+  for (let i = Math.max(from + 1, 1); i < data.byteLength; i++) {
+    if (data[i] !== 0x0a) continue;
+    if (data[i - 1] === 0x0a) {
+      return { index: i - 1, length: 2 };
+    }
+    if (i >= 3 && data[i - 1] === 0x0d && data[i - 2] === 0x0a && data[i - 3] === 0x0d) {
+      return { index: i - 3, length: 4 };
+    }
+  }
+  return undefined;
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const merged = new Uint8Array(a.byteLength + b.byteLength);
+  merged.set(a, 0);
+  merged.set(b, a.byteLength);
+  return merged;
+}
+
+function assertMcpMaxBufferSize(bytes: number, maxBufferSize: number): void {
+  if (bytes > maxBufferSize) throw mcpMaxBufferSizeError(maxBufferSize);
+}
+
+function mcpMaxBufferSizeError(maxBufferSize: number): Error {
+  return new Error(`MCP response exceeded maxBufferSize (${maxBufferSize} bytes per message)`);
+}
+
 function validateMcpHostname(hostname: string): void {
   const normalizedHostname = normalizeHostname(hostname);
 

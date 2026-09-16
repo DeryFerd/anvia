@@ -6,7 +6,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { abortError, linkAbortSignal, throwIfAborted } from "./abort";
 import { createMcpTool } from "./tool";
 import type { McpClientOptions, McpConnectOptions, McpServer, McpServerInfo } from "./types";
-import { createSafeMcpFetch, parseAndValidateMcpUrl, parseMcpHttpUrl } from "./url-safety";
+import {
+  createBoundedMcpFetch,
+  createSafeMcpFetch,
+  defaultMcpMaxBufferSize,
+  parseAndValidateMcpUrl,
+  parseMcpHttpUrl,
+} from "./url-safety";
 
 let mcpClientVersion: string | undefined;
 const modernMcpProtocolVersion = "2026-07-28";
@@ -174,6 +180,10 @@ async function createTransport(
   if (ssrfProtection !== "strict" && ssrfProtection !== "disabled") {
     throw new TypeError("MCP Streamable HTTP ssrfProtection must be strict or disabled");
   }
+  const maxBufferSize = transport.maxBufferSize ?? defaultMcpMaxBufferSize;
+  if (!Number.isSafeInteger(maxBufferSize) || maxBufferSize <= 0) {
+    throw new TypeError("MCP Streamable HTTP maxBufferSize must be a positive integer");
+  }
   let parameters: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
   let url: URL;
   let transportFetch: McpFetch | undefined;
@@ -188,7 +198,10 @@ async function createTransport(
     const fetchRequest = transportFetch ?? defaultMcpFetch;
     transportFetch = createMcpEndpointFetch(url, headers, fetchRequest);
   }
-  if (transportFetch !== undefined) parameters = { ...parameters, fetch: transportFetch };
+  parameters = {
+    ...parameters,
+    fetch: createBoundedMcpFetch(transportFetch ?? defaultMcpFetch, maxBufferSize) as McpFetch,
+  };
   if (transport.authProvider !== undefined) {
     parameters = { ...parameters, authProvider: transport.authProvider };
   }

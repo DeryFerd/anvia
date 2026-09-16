@@ -2,6 +2,7 @@ import type { LookupAddress } from "node:dns";
 import type { LookupFunction } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createBoundedMcpFetch,
   createSafeMcpFetch,
   createSafeMcpLookup,
   parseAndValidateMcpUrl,
@@ -137,5 +138,99 @@ function runLookup(lookup: LookupFunction, hostname: string): Promise<LookupAddr
       }
       resolve(addresses);
     });
+  });
+}
+
+describe("bounded MCP fetch", () => {
+  const limit = 16;
+
+  it("passes a response under the limit through unchanged", async () => {
+    const response = new Response('{"ok":1}', {
+      status: 200,
+      headers: { "content-type": "application/json", "content-length": "8" },
+    });
+    const boundedFetch = createBoundedMcpFetch(async () => response, limit);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    expect(limited.status).toBe(200);
+    expect(limited.headers.get("content-type")).toBe("application/json");
+    await expect(limited.text()).resolves.toBe('{"ok":1}');
+  });
+
+  it("rejects eagerly when content-length exceeds maxBufferSize", async () => {
+    const response = new Response("x".repeat(32), {
+      headers: { "content-type": "application/json", "content-length": "32" },
+    });
+    const boundedFetch = createBoundedMcpFetch(async () => response, limit);
+
+    await expect(boundedFetch("https://api.example.com/mcp")).rejects.toThrow(/maxBufferSize/);
+  });
+
+  it("errors while reading a chunked body that exceeds maxBufferSize", async () => {
+    const response = new Response(
+      createChunkedStream(["x".repeat(8), "x".repeat(8), "x".repeat(8)]),
+      {
+        headers: { "content-type": "application/json" },
+      },
+    );
+    const boundedFetch = createBoundedMcpFetch(async () => response, limit);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).rejects.toThrow(/maxBufferSize/);
+  });
+
+  it("allows event streams whose individual events stay within maxBufferSize", async () => {
+    const events = 'data: {"a":1}\n\ndata: {"b":2}\n\n';
+    const response = new Response(events, {
+      headers: { "content-type": "text/event-stream" },
+    });
+    const boundedFetch = createBoundedMcpFetch(async () => response, 15);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).resolves.toBe(events);
+  });
+
+  it("errors when a single event-stream event exceeds maxBufferSize", async () => {
+    const response = new Response('data: {"too":"long"}\n\n', {
+      headers: { "content-type": "text/event-stream" },
+    });
+    const boundedFetch = createBoundedMcpFetch(async () => response, 10);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).rejects.toThrow(/maxBufferSize/);
+  });
+
+  it("resets the event budget at boundaries that straddle chunk edges", async () => {
+    const firstEvent = "data: 123456789\r\n\r\n";
+    const secondEvent = "data: 987654321\r\n\r\n";
+    const response = new Response(
+      createChunkedStream([firstEvent.slice(0, -1), `\n${secondEvent}`]),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+    const boundedFetch = createBoundedMcpFetch(async () => response, firstEvent.length);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).resolves.toBe(firstEvent + secondEvent);
+  });
+
+  it("errors when an event that straddles chunk edges exceeds maxBufferSize", async () => {
+    const event = `data: ${"x".repeat(16)}\r\n\r\n`;
+    const response = new Response(createChunkedStream([event.slice(0, 15), event.slice(15)]), {
+      headers: { "content-type": "text/event-stream" },
+    });
+    const boundedFetch = createBoundedMcpFetch(async () => response, 15);
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).rejects.toThrow(/maxBufferSize/);
+  });
+});
+
+function createChunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
   });
 }
