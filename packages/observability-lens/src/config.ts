@@ -13,9 +13,8 @@ export type ResolvedLensConfig = {
 };
 
 export function resolveLensConfig(options: LensClientOptions = {}): ResolvedLensConfig {
-  const baseUrl = required("baseUrl", options.baseUrl, process.env.ANVIA_LENS_BASE_URL).replace(
-    /\/+$/,
-    "",
+  const baseUrl = normalizeLensBaseUrl(
+    required("baseUrl", options.baseUrl, process.env.ANVIA_LENS_BASE_URL),
   );
   const publicKey = required("publicKey", options.publicKey, process.env.ANVIA_LENS_PUBLIC_KEY);
   const secretKey = required("secretKey", options.secretKey, process.env.ANVIA_LENS_SECRET_KEY);
@@ -25,13 +24,10 @@ export function resolveLensConfig(options: LensClientOptions = {}): ResolvedLens
     process.env.ANVIA_LENS_SERVICE_NAME,
   );
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const captureMaxBytes = options.captureMaxBytes ?? 262_144;
+  const captureMaxBytes = assertCaptureMaxBytes(options.captureMaxBytes ?? 262_144);
   const captureMode = options.captureMode ?? "safe";
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError("Anvia Lens timeoutMs must be a positive number");
-  }
-  if (!Number.isInteger(captureMaxBytes) || captureMaxBytes < 96) {
-    throw new TypeError("Anvia Lens captureMaxBytes must be an integer of at least 96 bytes");
   }
   if (captureMode !== "safe" && captureMode !== "full") {
     throw new TypeError('Anvia Lens captureMode must be "safe" or "full"');
@@ -63,6 +59,42 @@ function required(
     );
   }
   return value;
+}
+
+/**
+ * Reject capture byte limits that OpenTelemetry would treat as "no limit", so an invalid override
+ * cannot silently defeat the capture policy.
+ */
+export function assertCaptureMaxBytes(value: number): number {
+  if (!Number.isInteger(value) || value < 96) {
+    throw new TypeError("Anvia Lens captureMaxBytes must be an integer of at least 96 bytes");
+  }
+  return value;
+}
+
+/**
+ * Lens endpoints are composed by string concatenation, so a malformed base URL would otherwise fail
+ * lazily (and for OTLP exports, silently). Reject it wherever a base URL enters the client.
+ */
+export function normalizeLensBaseUrl(value: string): string {
+  const normalized = value.trim().replace(/\/+$/, "");
+  // WHATWG URL reports a terminal "?" or "#" as an empty query/fragment, but it still delimits the
+  // composed endpoint, so reject either delimiter before parsing.
+  if (normalized.includes("?") || normalized.includes("#")) throw invalidBaseUrl(value);
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw invalidBaseUrl(value);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw invalidBaseUrl(value);
+  return normalized;
+}
+
+function invalidBaseUrl(value: string): TypeError {
+  return new TypeError(
+    `Anvia Lens baseUrl must be an absolute http(s) URL without query or fragment; received ${JSON.stringify(value)}`,
+  );
 }
 
 function first(...values: Array<string | undefined>): string | undefined {
