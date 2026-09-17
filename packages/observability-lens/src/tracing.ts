@@ -18,6 +18,7 @@ import { assertCaptureMaxBytes, type ResolvedLensConfig, resolveLensConfig } fro
 import { createLensDatasetClient } from "./dataset-client.js";
 import { createLensPromptClient } from "./prompt-client.js";
 import { createLensRedactor } from "./redaction.js";
+import { isRecord } from "./type-guards.js";
 import type {
   LensClientOptions,
   LensDatasetClient,
@@ -42,7 +43,12 @@ type LensResources = {
 
 type LensCaptureOverrides = Pick<
   LensClientOptions,
-  "captureMaxBytes" | "redactInputs" | "redactOutputs" | "redaction"
+  | "captureMaxBytes"
+  | "redactInputs"
+  | "redactOutputs"
+  | "redactErrors"
+  | "redactMetadata"
+  | "redaction"
 >;
 
 export class LensClient {
@@ -205,8 +211,9 @@ export class LensClient {
       );
     }
     if (this.resource !== undefined) return Promise.resolve(this.resource);
+    const capture = this.captureOptions({});
     this.initialization ??= Promise.resolve()
-      .then(() => createLensResources(this.config as ResolvedLensConfig))
+      .then(() => createLensResources(this.config as ResolvedLensConfig, capture.transformMetadata))
       .then((resource) => {
         this.resource = resource;
         return resource;
@@ -222,15 +229,33 @@ export class LensClient {
     captureMaxBytes: number;
     transformInput: ((value: unknown) => unknown) | undefined;
     transformOutput: ((value: unknown) => unknown) | undefined;
+    transformError: ((message: string) => string) | undefined;
+    transformMetadata: ((metadata: Record<string, unknown>) => Record<string, unknown>) | undefined;
   } {
     const config = this.config as ResolvedLensConfig;
     const redactor = createLensRedactor(overrides.redaction ?? this.options.redaction);
     const redactInputs = overrides.redactInputs ?? this.options.redactInputs;
     const redactOutputs = overrides.redactOutputs ?? this.options.redactOutputs;
+    // Error text is captured output and metadata is captured input, so each surface follows the
+    // directional flag unless it is set explicitly.
+    const redactErrors = overrides.redactErrors ?? this.options.redactErrors ?? redactOutputs;
+    const redactMetadata = overrides.redactMetadata ?? this.options.redactMetadata ?? redactInputs;
+    // Redaction runs on values the observer would otherwise capture verbatim, so each transform
+    // falls back to the original value when the redactor returns an unexpected shape.
+    const redactMessage = (message: string): string => {
+      const redacted = redactor.redact(message);
+      return typeof redacted === "string" ? redacted : message;
+    };
+    const redactRecord = (metadata: Record<string, unknown>): Record<string, unknown> => {
+      const redacted = redactor.redact(metadata);
+      return isRecord(redacted) ? redacted : metadata;
+    };
     return {
       captureMaxBytes: assertCaptureMaxBytes(overrides.captureMaxBytes ?? config.captureMaxBytes),
       transformInput: redactInputs ? redactor.redact : undefined,
       transformOutput: redactOutputs ? redactor.redact : undefined,
+      transformError: redactErrors ? redactMessage : undefined,
+      transformMetadata: redactMetadata ? redactRecord : undefined,
     };
   }
 
@@ -273,7 +298,10 @@ export class LensClient {
   }
 }
 
-async function createLensResources(config: ResolvedLensConfig): Promise<LensResources> {
+async function createLensResources(
+  config: ResolvedLensConfig,
+  transformMetadata: ((metadata: Record<string, unknown>) => Record<string, unknown>) | undefined,
+): Promise<LensResources> {
   const authorization = `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64")}`;
   const headers = { Authorization: authorization };
   const resource = resourceFromAttributes({
@@ -316,7 +344,7 @@ async function createLensResources(config: ResolvedLensConfig): Promise<LensReso
       loggerProvider,
       tracer: tracerProvider.getTracer("@anvia/lens", "1.0.0"),
       logger,
-      scorer: createOtelScorer({ logger }),
+      scorer: createOtelScorer({ logger, transformMetadata }),
     };
   } catch (error) {
     await Promise.allSettled([

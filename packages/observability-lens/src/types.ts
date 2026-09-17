@@ -1,18 +1,13 @@
 import type { JsonValue } from "@anvia/core/completion";
+import type { RedactionOptions, RedactionPattern } from "@anvia/core/redaction";
 import type { EvalReporter } from "@anvia/core/evals";
 import type { OtelScoreArgs } from "@anvia/otel";
 
 export type LensCaptureMode = "safe" | "full";
 
-export type LensRedactorPattern = {
-  name: string;
-  regex: RegExp;
-};
+export type LensRedactorPattern = RedactionPattern;
 
-export type LensRedactionOptions = {
-  patterns?: LensRedactorPattern[] | undefined;
-  replacement?: string | undefined;
-};
+export type LensRedactionOptions = RedactionOptions;
 
 export type LensClientOptions = {
   baseUrl?: string | undefined;
@@ -26,13 +21,21 @@ export type LensClientOptions = {
   captureMaxBytes?: number | undefined;
   redactInputs?: boolean | undefined;
   redactOutputs?: boolean | undefined;
+  redactErrors?: boolean | undefined;
+  redactMetadata?: boolean | undefined;
   redaction?: LensRedactionOptions | undefined;
   optional?: boolean | undefined;
 };
 
 export type LensObserverOptions = Pick<
   LensClientOptions,
-  "captureMode" | "captureMaxBytes" | "redactInputs" | "redactOutputs" | "redaction"
+  | "captureMode"
+  | "captureMaxBytes"
+  | "redactInputs"
+  | "redactOutputs"
+  | "redactErrors"
+  | "redactMetadata"
+  | "redaction"
 >;
 
 export type LensPipelineObserverOptions = LensObserverOptions;
@@ -41,7 +44,12 @@ export type LensScoreArgs = OtelScoreArgs;
 
 export type LensEvalReporterOptions = Pick<
   LensClientOptions,
-  "captureMaxBytes" | "redactInputs" | "redactOutputs" | "redaction"
+  | "captureMaxBytes"
+  | "redactInputs"
+  | "redactOutputs"
+  | "redactErrors"
+  | "redactMetadata"
+  | "redaction"
 > & {
   traceObserver?: string | undefined;
   publishInvalid?: boolean | undefined;
