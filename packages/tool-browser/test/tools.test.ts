@@ -48,10 +48,16 @@ describe("createBrowserTools", () => {
         navigation: { mode: "allow-all-http" },
       });
 
-      // Block localhost
-      await expect(navigate?.call({ url: "http://localhost:8080" })).rejects.toMatchObject({
-        code: "navigation_blocked",
-      });
+      // Block localhost names, including fully qualified spellings with a trailing root dot.
+      for (const url of [
+        "http://localhost:8080",
+        "http://localhost.:8080",
+        "http://service.localhost.:8080",
+      ]) {
+        await expect(navigate?.call({ url })).rejects.toMatchObject({
+          code: "navigation_blocked",
+        });
+      }
 
       // Block 127.0.0.1
       await expect(navigate?.call({ url: "http://127.0.0.1:3000" })).rejects.toMatchObject({
@@ -208,6 +214,118 @@ describe("createBrowserTools", () => {
         expect.objectContaining({ method: "navigate" }),
         expect.anything(),
       );
+    });
+
+    it("blocks IETF protocol assignments except globally reachable anycast addresses", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // 192.0.0.0/24 is not globally reachable, including the dummy address at .8
+      // and the NAT64 discovery addresses at .170 and .171
+      for (const url of ["http://192.0.0.1", "http://192.0.0.8", "http://192.0.0.11"]) {
+        await expect(navigate?.call({ url })).rejects.toMatchObject({ code: "navigation_blocked" });
+      }
+      await expect(navigate?.call({ url: "http://192.0.0.170" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+      await expect(navigate?.call({ url: "http://192.0.0.255" })).rejects.toMatchObject({
+        code: "navigation_blocked",
+      });
+
+      // IANA marks 192.0.0.9 (PCP anycast) and 192.0.0.10 (TURN anycast) globally reachable
+      for (const url of ["http://192.0.0.9", "http://192.0.0.10"]) {
+        await expect(navigate?.call({ url })).resolves.toMatchObject({ url });
+      }
+    });
+
+    it("blocks special-purpose IPv6 ranges and embedded IPv4 forms", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      for (const url of [
+        "http://[64:ff9b:1::1]", // NAT64 local-use prefix
+        "http://[100::1]", // discard-only
+        "http://[100:0:0:1::1]", // dummy IPv6 prefix
+        "http://[2001::1]", // Teredo
+        "http://[2001:2::1]", // benchmarking
+        "http://[2001:10::1]", // ORCHID
+        "http://[2001:db8::1]", // documentation
+        "http://[2002::1]", // 6to4
+        "http://[3fff::1]", // documentation
+        "http://[5f00::1]", // segment routing SIDs
+        "http://[fec0::1]", // deprecated site-local
+        "http://[::7f00:1]", // deprecated IPv4-compatible spelling of 127.0.0.1
+        "http://[::ffff:7f00:1]", // IPv4-mapped hex spelling of 127.0.0.1
+      ]) {
+        await expect(navigate?.call({ url })).rejects.toMatchObject({ code: "navigation_blocked" });
+      }
+    });
+
+    it("keeps addresses adjacent to blocked ranges reachable", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      // Upper and lower bounds of 100.64.0.0/10, 192.0.2.0/24, 198.18.0.0/15,
+      // and 203.0.113.0/24
+      for (const url of [
+        "http://100.64.0.0",
+        "http://100.127.255.255",
+        "http://192.0.2.0",
+        "http://192.0.2.255",
+        "http://198.18.0.0",
+        "http://198.19.255.255",
+        "http://203.0.113.0",
+        "http://203.0.113.255",
+      ]) {
+        await expect(navigate?.call({ url })).rejects.toMatchObject({ code: "navigation_blocked" });
+      }
+
+      // The neighboring addresses just outside those ranges
+      for (const url of [
+        "http://100.63.255.255",
+        "http://100.128.0.0",
+        "http://192.0.1.255",
+        "http://192.0.3.0",
+        "http://198.17.255.255",
+        "http://198.20.0.0",
+        "http://203.0.112.255",
+        "http://203.0.114.0",
+        "http://[2001:db7::1]",
+        "http://[2001:db9::1]",
+        "http://[2003::1]",
+      ]) {
+        await expect(navigate?.call({ url })).resolves.toMatchObject({ url });
+      }
+    });
+
+    it("allows globally reachable IPv6 addresses", async () => {
+      const { connection } = fakeConnection();
+      const [navigate] = createBrowserTools({
+        connection,
+        tools: ["browser_navigate"],
+        navigation: { mode: "allow-all-http" },
+      });
+
+      for (const url of [
+        "http://[64:ff9b::7f00:1]", // NAT64 well-known prefix
+        "http://[2001:20::1]", // ORCHIDv2
+        "http://[2606:4700:4700::1111]",
+        "http://[2001:4860:4860::8888]",
+      ]) {
+        await expect(navigate?.call({ url })).resolves.toMatchObject({ url });
+      }
     });
 
     it("blocks response URL pointing to private IP after successful navigation", async () => {

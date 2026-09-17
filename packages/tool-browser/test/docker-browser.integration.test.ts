@@ -67,10 +67,12 @@ describe.skipIf(!enabled)("Docker browser integration", () => {
           [
             'const { createServer } = require("node:http");',
             'createServer((_req, res) => res.end("<button>Continue</button><main>Browser ready</main>"))',
-            '.listen(8080, "127.0.0.1");',
+            '.listen(8080, "0.0.0.0");',
           ].join(""),
         ],
       });
+      const hostname = await browser.sandbox.runtime.exec({ command: "hostname" });
+      const pageOrigin = `http://${new TextDecoder().decode(hostname.stdout).trim()}:8080`;
       await using connection = await browser.connect({
         timeoutMs: 15_000,
         scheduling: { mode: "per-tab", maxConcurrentTabs: 4 },
@@ -78,14 +80,19 @@ describe.skipIf(!enabled)("Docker browser integration", () => {
       const tools = createBrowserTools({
         connection,
         tools: ["browser_open_tab", "browser_navigate", "browser_snapshot", "browser_screenshot"],
-        navigation: { mode: "origins", origins: ["http://127.0.0.1:8080"] },
+        // The container reaches its own service by container hostname; the loopback
+        // literal stays blocked even though it is the same server.
+        navigation: { mode: "origins", origins: [pageOrigin] },
       });
       const openTab = tools.find((tool) => tool.name === "browser_open_tab");
       const navigate = tools.find((tool) => tool.name === "browser_navigate");
       const snapshot = tools.find((tool) => tool.name === "browser_snapshot");
       const screenshot = tools.find((tool) => tool.name === "browser_screenshot");
       const opened = (await openTab?.call({})) as { tabId: string };
-      await navigate?.call({ tabId: opened.tabId, url: "http://127.0.0.1:8080" });
+      await expect(
+        navigate?.call({ tabId: opened.tabId, url: "http://127.0.0.1:8080" }),
+      ).rejects.toMatchObject({ code: "navigation_blocked" });
+      await navigate?.call({ tabId: opened.tabId, url: pageOrigin });
       await expect(snapshot?.call({ tabId: opened.tabId })).resolves.toMatchObject({
         tabId: opened.tabId,
         truncated: false,

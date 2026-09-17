@@ -1,186 +1,184 @@
 /**
  * Shared SSRF guard: classify a hostname as private, reserved, or public.
  *
- * Used by both the tool-level navigation check (tools.ts) and the worker-level
- * route enforcement (automation-worker.ts) so redirects and sub-navigations are
- * subject to the same blocking logic.
+ * Called from the navigation policy checks in ./navigation-policy.ts, which run both
+ * before the tool dispatches a navigation and inside the worker's route handler for
+ * every top-level navigation request, including redirects.
+ *
+ * Blocked ranges follow the IANA IPv4/IPv6 special-purpose address registries.
+ * Addresses that IANA marks globally reachable inside otherwise special-purpose space
+ * stay reachable.
+ *
+ * IPv4 spellings are normalized by the WHATWG URL parser before this guard runs
+ * (`127.1`, `2130706433`, `0x7f.0.0.1`, and `0177.0.0.1` all arrive as `127.0.0.1`),
+ * and hosts that are not valid literals are left to DNS.
  */
+
+type AddressRange = readonly [network: string, prefix: number];
+
+/** Non-global IPv4 ranges plus transition mechanisms that can encode another address. */
+const BLOCKED_IPV4: readonly AddressRange[] = [
+  ["0.0.0.0", 8], // "this network"
+  ["10.0.0.0", 8], // private network
+  ["100.64.0.0", 10], // shared address space (carrier-grade NAT)
+  ["127.0.0.0", 8], // loopback
+  ["169.254.0.0", 16], // link-local, includes cloud metadata at 169.254.169.254
+  ["172.16.0.0", 12], // private network
+  ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.0.2.0", 24], // documentation (TEST-NET-1)
+  ["192.88.99.0", 24], // 6to4 relay anycast (deprecated)
+  ["192.168.0.0", 16], // private network
+  ["198.18.0.0", 15], // benchmarking
+  ["198.51.100.0", 24], // documentation (TEST-NET-2)
+  ["203.0.113.0", 24], // documentation (TEST-NET-3)
+  ["224.0.0.0", 4], // multicast
+  ["240.0.0.0", 4], // reserved, includes 255.255.255.255
+];
+
+/** Non-global IPv6 ranges plus transition mechanisms that can encode another address. */
+const BLOCKED_IPV6: readonly AddressRange[] = [
+  ["::", 96], // unspecified, loopback, and deprecated IPv4-compatible addresses
+  ["::ffff:0:0", 96], // IPv4-mapped (alternate spelling of an IPv4 destination)
+  ["64:ff9b:1::", 48], // NAT64 local-use prefix
+  ["100::", 64], // discard-only
+  ["100:0:0:1::", 64], // dummy IPv6 prefix
+  ["2001::", 32], // Teredo
+  ["2001:2::", 48], // benchmarking
+  ["2001:10::", 28], // ORCHID (deprecated)
+  ["2001:db8::", 32], // documentation
+  ["2002::", 16], // 6to4
+  ["3fff::", 20], // documentation
+  ["5f00::", 16], // segment routing SIDs
+  ["fc00::", 7], // unique local
+  ["fe80::", 10], // link-local
+  ["fec0::", 10], // site-local (deprecated)
+  ["ff00::", 8], // multicast
+];
+
+/** IANA marks these two /32s globally reachable although 192.0.0.0/24 is not. */
+const GLOBALLY_REACHABLE_IPV4: ReadonlySet<number> = new Set([0xc0000009, 0xc000000a]);
+
+const BLOCKED_IPV4_RANGES = compileIpv4Ranges(BLOCKED_IPV4);
+const BLOCKED_IPV6_RANGES = compileIpv6Ranges(BLOCKED_IPV6);
 
 export function isPrivateOrReservedHost(hostname: string): boolean {
-  // Normalize: strip brackets for IPv6
-  const host =
-    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const host = stripBrackets(hostname).toLowerCase().replace(/\.+$/, "");
 
-  // Block localhost and variations
-  if (host === "localhost" || host.endsWith(".localhost")) {
-    return true;
-  }
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
 
-  // Try to parse as IPv4
-  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const octets = ipv4Match.slice(1, 5).map(Number);
+  const ipv4 = parseIpv4(host);
+  if (ipv4 !== null) return isBlockedIpv4(ipv4);
 
-    // Validate octets are in range 0-255
-    if (octets.some((octet) => octet > 255)) {
-      return true; // Invalid IP, block it
-    }
-
-    const a = octets[0];
-    const b = octets[1];
-    const c = octets[2];
-    const d = octets[3];
-
-    // Guard: ensure all octets are defined
-    if (a === undefined || b === undefined || c === undefined || d === undefined) {
-      return true;
-    }
-
-    return isBlockedIpv4(a, b, c, d);
-  }
-
-  // Try to parse as IPv6
-  const ipv6 = expandIpv6(host);
-  if (ipv6 !== null) {
-    return isBlockedIpv6(ipv6);
-  }
+  const ipv6 = parseIpv6(host);
+  if (ipv6 !== null) return isBlockedIpv6(ipv6);
 
   return false;
 }
 
-function isBlockedIpv4(a: number, b: number, c: number, _d: number): boolean {
-  // 0.0.0.0/8 - Current network (only valid as source address)
-  if (a === 0) return true;
+function stripBrackets(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
 
-  // 10.0.0.0/8 - Private network
-  if (a === 10) return true;
-
-  // 100.64.0.0/10 - Carrier-grade NAT (shared address space)
-  if (a === 100 && b >= 64 && b <= 127) return true;
-
-  // 127.0.0.0/8 - Loopback
-  if (a === 127) return true;
-
-  // 169.254.0.0/16 - Link-local (includes AWS metadata at 169.254.169.254)
-  if (a === 169 && b === 254) return true;
-
-  // 172.16.0.0/12 - Private network
-  if (a === 172 && b >= 16 && b <= 31) return true;
-
-  // 192.0.2.0/24 - Documentation/test-net-1
-  if (a === 192 && b === 0 && c === 2) return true;
-
-  // 192.88.99.0/24 - 6to4 relay anycast
-  if (a === 192 && b === 88 && c === 99) return true;
-
-  // 192.168.0.0/16 - Private network
-  if (a === 192 && b === 168) return true;
-
-  // 198.18.0.0/15 - Benchmarking
-  if (a === 198 && (b === 18 || b === 19)) return true;
-
-  // 198.51.100.0/24 - Documentation/test-net-2
-  if (a === 198 && b === 51 && c === 100) return true;
-
-  // 203.0.113.0/24 - Documentation/test-net-3
-  if (a === 203 && b === 0 && c === 113) return true;
-
-  // 224.0.0.0/4 - Multicast
-  if (a >= 224 && a <= 239) return true;
-
-  // 240.0.0.0/4 - Reserved
-  if (a >= 240) return true;
-
+function isBlockedIpv4(value: number): boolean {
+  if (GLOBALLY_REACHABLE_IPV4.has(value)) return false;
+  for (const [network, prefix] of BLOCKED_IPV4_RANGES) {
+    if (isInIpv4Range(value, network, prefix)) return true;
+  }
   return false;
 }
 
-/**
- * Expand an IPv6 address to 8 groups of 4 hex digits (32 hex chars total).
- * Returns null if the input is not a valid IPv6 address.
- */
-function expandIpv6(addr: string): string | null {
-  // Handle IPv4-mapped IPv6: ::ffff:x.x.x.x
-  const v4MappedMatch = addr.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
-  if (v4MappedMatch?.[1] !== undefined) {
-    const parts = v4MappedMatch[1].split(".").map(Number);
-    if (parts.length === 4 && parts.every((p) => p >= 0 && p <= 255)) {
-      // Return as blocked IPv4 address check
-      return `__v4:${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}`;
-    }
+function isBlockedIpv6(value: bigint): boolean {
+  for (const [network, prefix] of BLOCKED_IPV6_RANGES) {
+    if (isInIpv6Range(value, network, prefix)) return true;
+  }
+  return false;
+}
+
+function isInIpv4Range(value: number, network: number, prefix: number): boolean {
+  if (prefix === 0) return true;
+  const shift = 32 - prefix;
+  return value >>> shift === network >>> shift;
+}
+
+function isInIpv6Range(value: bigint, network: bigint, prefix: number): boolean {
+  if (prefix === 0) return true;
+  const shift = BigInt(128 - prefix);
+  return value >> shift === network >> shift;
+}
+
+/** Parse a dotted quad into its unsigned 32-bit value, or null when it is not one. */
+function parseIpv4(value: string): number | null {
+  const parts = value.split(".");
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    result = result * 256 + octet;
+  }
+  return result;
+}
+
+/** Parse an IPv6 address (with optional embedded IPv4) into its 128-bit value. */
+function parseIpv6(value: string): bigint | null {
+  // Zone identifiers (`fe80::1%eth0`) are invalid inside URLs; strip the zone so a
+  // caller passing one directly still gets the address classified.
+  const zone = value.indexOf("%");
+  const address = zone === -1 ? value : value.slice(0, zone);
+
+  let text = address;
+  const embedded = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address);
+  if (embedded !== null) {
+    const ipv4 = parseIpv4(embedded[1] ?? "");
+    if (ipv4 === null) return null;
+    const groups = `${(ipv4 >>> 16).toString(16)}:${(ipv4 & 0xffff).toString(16)}`;
+    text = `${address.slice(0, embedded.index)}${groups}`;
   }
 
-  // Handle :: (compressed) notation
-  if (addr === "::") return "00000000000000000000000000000000";
-
-  let parts: string[];
-  if (addr.includes("::")) {
-    // Split on :: to get prefix and suffix
-    const [prefix, suffix] = addr.split("::");
-    const prefixParts = prefix ? prefix.split(":") : [];
-    const suffixParts = suffix ? suffix.split(":") : [];
-    const missing = 8 - prefixParts.length - suffixParts.length;
-    parts = [...prefixParts, ...Array(missing).fill("0000"), ...suffixParts];
-  } else {
-    parts = addr.split(":");
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  if (halves.length === 1) {
+    const groups = text.split(":");
+    return groups.length === 8 ? foldHexGroups(groups) : null;
   }
 
-  if (parts.length !== 8) return null;
+  const [head = "", tail = ""] = halves;
+  const leading = head === "" ? [] : head.split(":");
+  const trailing = tail === "" ? [] : tail.split(":");
+  const missing = 8 - leading.length - trailing.length;
+  if (missing < 1) return null;
+  const foldedHead = foldHexGroups(leading);
+  const foldedTail = foldHexGroups(trailing);
+  if (foldedHead === null || foldedTail === null) return null;
+  return (foldedHead << BigInt(16 * (missing + trailing.length))) | foldedTail;
+}
 
-  // Validate and pad each group
-  const expanded = parts.map((p) => {
-    if (!/^[0-9a-fA-F]{1,4}$/.test(p)) return null;
-    return p.padStart(4, "0");
+function foldHexGroups(groups: readonly string[]): bigint | null {
+  let value = 0n;
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    value = (value << 16n) | BigInt(parseInt(group, 16));
+  }
+  return value;
+}
+
+function compileIpv4Ranges(
+  ranges: readonly AddressRange[],
+): ReadonlyArray<readonly [number, number]> {
+  return ranges.map(([network, prefix]) => {
+    const value = parseIpv4(network);
+    if (value === null) throw new TypeError(`Invalid IPv4 range: ${network}/${prefix}`);
+    return [value, prefix] as const;
   });
-
-  if (expanded.includes(null)) return null;
-  return expanded.join("");
 }
 
-function isBlockedIpv6(expanded: string): boolean {
-  // Handle IPv4-mapped detection marker (from dot notation)
-  if (expanded.startsWith("__v4:")) {
-    const v4Parts = expanded.slice(5).split(".").map(Number);
-    const [a, b, c, d] = v4Parts;
-    if (a !== undefined && b !== undefined && c !== undefined && d !== undefined) {
-      return isBlockedIpv4(a, b, c, d);
-    }
-    return true;
-  }
-
-  // expanded is 32 hex chars representing 8 groups of 4
-  const g0 = parseInt(expanded.slice(0, 4), 16);
-
-  // ::1 - Loopback
-  if (expanded === "00000000000000000000000000000001") return true;
-
-  // fe80::/10 - Link-local (g0 in range 0xFE80..0xFEBF)
-  if (g0 >= 0xfe80 && g0 <= 0xfebf) return true;
-
-  // fec0::/10 - Site-local (deprecated, g0 in range 0xFEC0..0xFEFF)
-  if (g0 >= 0xfec0 && g0 <= 0xfeff) return true;
-
-  // fc00::/7 - Unique local (g0 in range 0xFC00..0xFDFF)
-  if (g0 >= 0xfc00 && g0 <= 0xfdff) return true;
-
-  // Multicast ff00::/8
-  if (g0 >= 0xff00) return true;
-
-  // Unspecified ::
-  if (expanded === "00000000000000000000000000000000") return true;
-
-  // IPv4-mapped: first 80 bits zeros + ffff, then 32-bit IPv4 embedded
-  // 00000000000000000000ffffxxxxxxxx
-  if (
-    expanded.startsWith("00000000000000000000ffff") ||
-    expanded.startsWith("00000000000000000000FFFF")
-  ) {
-    const v4Hex = expanded.slice(24);
-    const a = parseInt(v4Hex.slice(0, 2), 16);
-    const b = parseInt(v4Hex.slice(2, 4), 16);
-    const c = parseInt(v4Hex.slice(4, 6), 16);
-    const d = parseInt(v4Hex.slice(6, 8), 16);
-    return isBlockedIpv4(a, b, c, d);
-  }
-
-  return false;
+function compileIpv6Ranges(
+  ranges: readonly AddressRange[],
+): ReadonlyArray<readonly [bigint, number]> {
+  return ranges.map(([network, prefix]) => {
+    const value = parseIpv6(network);
+    if (value === null) throw new TypeError(`Invalid IPv6 range: ${network}/${prefix}`);
+    return [value, prefix] as const;
+  });
 }
