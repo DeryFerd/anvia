@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Browser, Locator, Page, Route } from "playwright-core";
+import type { Browser, Locator, Page } from "playwright-core";
 import { chromium } from "playwright-core";
 import type {
   AutomationCancel,
@@ -9,6 +9,7 @@ import type {
   BrowserTarget,
   SerializedError,
 } from "./automation-protocol";
+import { enforceNavigationPolicy } from "./internal/navigation-policy";
 import type { BrowserNavigationPolicy, BrowserTab } from "./types";
 
 type ActiveOperation = {
@@ -253,35 +254,6 @@ async function setNavigationPolicy(policy: BrowserNavigationPolicy): Promise<voi
       .contexts()
       .map((context) => context.route("**/*", (route) => enforceNavigationPolicy(route, policy))),
   );
-}
-
-async function enforceNavigationPolicy(
-  route: Route,
-  policy: BrowserNavigationPolicy,
-): Promise<void> {
-  const request = route.request();
-  const frame = request.frame();
-  if (
-    request.isNavigationRequest() &&
-    frame === frame.page().mainFrame() &&
-    !isNavigationAllowed(request.url(), policy)
-  ) {
-    await route.abort("blockedbyclient");
-    return;
-  }
-  await route.continue();
-}
-
-function isNavigationAllowed(value: string, policy: BrowserNavigationPolicy): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-  if (url.username.length > 0 || url.password.length > 0) return false;
-  return policy.mode === "allow-all-http" || policy.origins.includes(url.origin);
 }
 
 function locatorFor(page: Page, target: BrowserTarget): Locator {

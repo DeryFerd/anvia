@@ -217,7 +217,10 @@ The legacy `not_ready` and `human_controlled` codes remain in the public union. 
 The tools use ARIA state and strict Playwright locators. They do not expose JavaScript evaluation, raw
 CDP, coordinate input, shell access, hidden action retries, or automatic reconnection. The navigation
 policy is installed across the default browser context, so top-level navigation from links, forms,
-redirects, popups, and direct navigation is checked consistently. It does not block third-party
+redirects, popups, and direct navigation is checked consistently. Private and reserved IP literals
+(loopback, link-local, RFC 1918, and the other IANA special-purpose ranges) are rejected in every
+policy mode, including `origins` entries that list them. The guard matches the literal host, so a
+public domain that resolves to a private address is not covered. The policy does not block third-party
 subresources; Docker bridge networking remains outside that policy.
 
 The image runs Chromium as a non-root user with Chromium sandboxing, the Playwright seccomp profile,
