@@ -154,6 +154,128 @@ export function createSafeMcpFetch(): FetchLike {
   };
 }
 
+/** Default per-message response bound, matching the stdio transport's buffer default. */
+export const defaultMcpMaxBufferSize = 10 * 1024 * 1024;
+
+/**
+ * Wraps a fetch function so each JSON-RPC response message stays within
+ * `maxBufferSize` bytes: the whole body for regular responses, and each SSE
+ * event for `text/event-stream` responses. Without a bound, an untrusted MCP
+ * server can stream unbounded data into the process.
+ */
+export function createBoundedMcpFetch(fetchRequest: FetchLike, maxBufferSize: number): FetchLike {
+  if (!Number.isSafeInteger(maxBufferSize) || maxBufferSize <= 0) {
+    throw new TypeError("MCP maxBufferSize must be a positive integer");
+  }
+  return async (input, init) => {
+    const response = await fetchRequest(input, init);
+    return limitMcpResponseMessageSize(response, maxBufferSize);
+  };
+}
+
+async function limitMcpResponseMessageSize(
+  response: Awaited<ReturnType<FetchLike>>,
+  maxBufferSize: number,
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  const body = response.body;
+  if (body === null) return response;
+
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const contentLength = Number(response.headers.get("content-length"));
+  if (
+    contentType !== "text/event-stream" &&
+    !Number.isNaN(contentLength) &&
+    contentLength > maxBufferSize
+  ) {
+    await body.cancel().catch(() => {});
+    throw mcpMaxBufferSizeError(maxBufferSize);
+  }
+
+  const limited = body.pipeThrough(
+    contentType === "text/event-stream"
+      ? createEventStreamLimitTransform(maxBufferSize)
+      : createTotalLimitTransform(maxBufferSize),
+  );
+  return new Response(limited, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  }) as Awaited<ReturnType<FetchLike>>;
+}
+
+function createTotalLimitTransform(maxBufferSize: number): TransformStream<Uint8Array, Uint8Array> {
+  let totalBytes = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      totalBytes += chunk.byteLength;
+      assertMcpMaxBufferSize(totalBytes, maxBufferSize);
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+/**
+ * Limits each SSE event (the bytes through its blank-line separator) instead of
+ * the whole stream, so long-lived streams with many small messages keep
+ * flowing. SSE accepts CR, LF, and CRLF line endings in any combination, and a
+ * pending CR is retained across chunks until its line ending can be classified.
+ */
+function createEventStreamLimitTransform(
+  maxBufferSize: number,
+): TransformStream<Uint8Array, Uint8Array> {
+  let eventBytes = 0;
+  let lineHasContent = false;
+  let pendingCr = false;
+  let pendingCrEndedEmptyLine = false;
+
+  const finishLine = (wasEmpty: boolean): void => {
+    if (wasEmpty) eventBytes = 0;
+    lineHasContent = false;
+  };
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      for (const byte of chunk) {
+        if (pendingCr) {
+          if (byte === 0x0a) {
+            eventBytes += 1;
+            assertMcpMaxBufferSize(eventBytes, maxBufferSize);
+            finishLine(pendingCrEndedEmptyLine);
+            pendingCr = false;
+            continue;
+          }
+          finishLine(pendingCrEndedEmptyLine);
+          pendingCr = false;
+        }
+
+        eventBytes += 1;
+        assertMcpMaxBufferSize(eventBytes, maxBufferSize);
+
+        if (byte === 0x0d) {
+          pendingCr = true;
+          pendingCrEndedEmptyLine = !lineHasContent;
+        } else if (byte === 0x0a) {
+          finishLine(!lineHasContent);
+        } else {
+          lineHasContent = true;
+        }
+      }
+      controller.enqueue(chunk);
+    },
+    flush() {
+      if (pendingCr) finishLine(pendingCrEndedEmptyLine);
+    },
+  });
+}
+
+function assertMcpMaxBufferSize(bytes: number, maxBufferSize: number): void {
+  if (bytes > maxBufferSize) throw mcpMaxBufferSizeError(maxBufferSize);
+}
+
+function mcpMaxBufferSizeError(maxBufferSize: number): Error {
+  return new Error(`MCP response exceeded maxBufferSize (${maxBufferSize} bytes per message)`);
+}
+
 function validateMcpHostname(hostname: string): void {
   const normalizedHostname = normalizeHostname(hostname);
 

@@ -81,6 +81,10 @@ redirects and OAuth discovery, while still requiring HTTP(S). Use it only when t
 and trusts that network boundary. MCP server instructions remain inspectable metadata and are not
 added to Agent instructions.
 
+Streamable HTTP responses are bounded per JSON-RPC message. `maxBufferSize` caps the JSON body of a
+regular response and each SSE event of an event stream at 10 MiB by default, matching the stdio
+transport, so an untrusted server cannot stream unbounded data into the process.
+
 ## Exports
 
 - `McpClient`

@@ -330,6 +330,7 @@ describe("McpClient", () => {
   });
 
   it("allows an explicit SSRF protection opt-out for local Streamable HTTP", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{"ok":1}'));
     const client = new McpClient({
       name: "local",
       transport: {
@@ -342,7 +343,48 @@ describe("McpClient", () => {
     await client.connect();
 
     expect(sdk.httpTransports[0]?.url.href).toBe("http://localhost:3000/mcp");
-    expect(sdk.httpTransports[0]?.options).not.toHaveProperty("fetch");
+    // SSRF rules are skipped, but response bounding still applies.
+    expect(sdk.httpTransports[0]?.options).toHaveProperty("fetch", expect.any(Function));
+    const fetchRequest = sdk.httpTransports[0]?.options.fetch as typeof fetch;
+    await expect(fetchRequest("http://localhost:3000/mcp")).resolves.toBeInstanceOf(Response);
+    fetchSpy.mockRestore();
+  });
+
+  it("bounds Streamable HTTP responses by maxBufferSize", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("x".repeat(64), { headers: { "content-length": "64" } }));
+    const client = new McpClient({
+      name: "bounded",
+      transport: {
+        type: "streamableHttp",
+        url: "http://localhost:3000/mcp",
+        ssrfProtection: "disabled",
+        maxBufferSize: 16,
+      },
+    });
+
+    await client.connect();
+
+    const fetchRequest = sdk.httpTransports[0]?.options.fetch as typeof fetch;
+    await expect(fetchRequest("http://localhost:3000/mcp")).rejects.toThrow(/maxBufferSize/);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    fetchSpy.mockRestore();
+  });
+
+  it("rejects an invalid Streamable HTTP maxBufferSize at runtime", async () => {
+    const client = new McpClient({
+      name: "invalid-buffer",
+      transport: {
+        type: "streamableHttp",
+        url: "https://api.example.com/mcp",
+        maxBufferSize: 0,
+      } as never,
+    });
+
+    await expect(client.connect()).rejects.toThrow(
+      "MCP Streamable HTTP maxBufferSize must be a positive integer",
+    );
   });
 
   it("rejects an unknown Streamable HTTP SSRF policy at runtime", async () => {
