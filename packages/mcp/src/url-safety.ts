@@ -182,7 +182,11 @@ async function limitMcpResponseMessageSize(
 
   const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   const contentLength = Number(response.headers.get("content-length"));
-  if (!Number.isNaN(contentLength) && contentLength > maxBufferSize) {
+  if (
+    contentType !== "text/event-stream" &&
+    !Number.isNaN(contentLength) &&
+    contentLength > maxBufferSize
+  ) {
     await body.cancel().catch(() => {});
     throw mcpMaxBufferSizeError(maxBufferSize);
   }
@@ -211,66 +215,57 @@ function createTotalLimitTransform(maxBufferSize: number): TransformStream<Uint8
 }
 
 /**
- * Limits each SSE event (the bytes between blank-line separators) instead of
+ * Limits each SSE event (the bytes through its blank-line separator) instead of
  * the whole stream, so long-lived streams with many small messages keep
- * flowing. Boundaries can straddle chunk edges, so up to three trailing bytes
- * are carried into the next chunk to complete the match.
+ * flowing. SSE accepts CR, LF, and CRLF line endings in any combination, and a
+ * pending CR is retained across chunks until its line ending can be classified.
  */
 function createEventStreamLimitTransform(
   maxBufferSize: number,
 ): TransformStream<Uint8Array, Uint8Array> {
   let eventBytes = 0;
-  let carry: Uint8Array | undefined;
+  let lineHasContent = false;
+  let pendingCr = false;
+  let pendingCrEndedEmptyLine = false;
+
+  const finishLine = (wasEmpty: boolean): void => {
+    if (wasEmpty) eventBytes = 0;
+    lineHasContent = false;
+  };
+
   return new TransformStream({
     transform(chunk, controller) {
-      const data = carry === undefined ? chunk : concatBytes(carry, chunk);
-      const carryLength = carry?.byteLength ?? 0;
-      carry = undefined;
-      let cursor = 0;
-      while (true) {
-        const boundary = findEventBoundary(data, cursor);
-        if (boundary === undefined) break;
-        const boundaryEnd = boundary.index + boundary.length;
-        const countStart = Math.max(cursor, carryLength);
-        if (boundaryEnd > countStart) {
-          eventBytes += boundaryEnd - countStart;
+      for (const byte of chunk) {
+        if (pendingCr) {
+          if (byte === 0x0a) {
+            eventBytes += 1;
+            assertMcpMaxBufferSize(eventBytes, maxBufferSize);
+            finishLine(pendingCrEndedEmptyLine);
+            pendingCr = false;
+            continue;
+          }
+          finishLine(pendingCrEndedEmptyLine);
+          pendingCr = false;
         }
+
+        eventBytes += 1;
         assertMcpMaxBufferSize(eventBytes, maxBufferSize);
-        eventBytes = 0;
-        cursor = boundaryEnd;
+
+        if (byte === 0x0d) {
+          pendingCr = true;
+          pendingCrEndedEmptyLine = !lineHasContent;
+        } else if (byte === 0x0a) {
+          finishLine(!lineHasContent);
+        } else {
+          lineHasContent = true;
+        }
       }
-      const tailStart = Math.max(cursor, carryLength);
-      if (data.byteLength > tailStart) {
-        eventBytes += data.byteLength - tailStart;
-      }
-      assertMcpMaxBufferSize(eventBytes, maxBufferSize);
-      carry = data.subarray(Math.max(data.byteLength - 3, 0));
       controller.enqueue(chunk);
     },
+    flush() {
+      if (pendingCr) finishLine(pendingCrEndedEmptyLine);
+    },
   });
-}
-
-function findEventBoundary(
-  data: Uint8Array,
-  from: number,
-): { index: number; length: number } | undefined {
-  for (let i = Math.max(from + 1, 1); i < data.byteLength; i++) {
-    if (data[i] !== 0x0a) continue;
-    if (data[i - 1] === 0x0a) {
-      return { index: i - 1, length: 2 };
-    }
-    if (i >= 3 && data[i - 1] === 0x0d && data[i - 2] === 0x0a && data[i - 3] === 0x0d) {
-      return { index: i - 3, length: 4 };
-    }
-  }
-  return undefined;
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const merged = new Uint8Array(a.byteLength + b.byteLength);
-  merged.set(a, 0);
-  merged.set(b, a.byteLength);
-  return merged;
 }
 
 function assertMcpMaxBufferSize(bytes: number, maxBufferSize: number): void {

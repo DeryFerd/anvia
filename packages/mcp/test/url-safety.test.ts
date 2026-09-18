@@ -182,7 +182,10 @@ describe("bounded MCP fetch", () => {
   it("allows event streams whose individual events stay within maxBufferSize", async () => {
     const events = 'data: {"a":1}\n\ndata: {"b":2}\n\n';
     const response = new Response(events, {
-      headers: { "content-type": "text/event-stream" },
+      headers: {
+        "content-type": "text/event-stream",
+        "content-length": String(events.length),
+      },
     });
     const boundedFetch = createBoundedMcpFetch(async () => response, 15);
 
@@ -211,6 +214,21 @@ describe("bounded MCP fetch", () => {
 
     const limited = await boundedFetch("https://api.example.com/mcp");
     await expect(limited.text()).resolves.toBe(firstEvent + secondEvent);
+  });
+
+  it("resets the event budget for CR-only and mixed line endings", async () => {
+    const events = ["data: 1234\r\r", "data: 5678\r\n\n", "data: 9012\n\r\n"];
+    const stream = events.join("");
+    const response = new Response(createChunkedStream([...stream]), {
+      headers: { "content-type": "text/event-stream" },
+    });
+    const boundedFetch = createBoundedMcpFetch(
+      async () => response,
+      Math.max(...events.map((event) => event.length)),
+    );
+
+    const limited = await boundedFetch("https://api.example.com/mcp");
+    await expect(limited.text()).resolves.toBe(stream);
   });
 
   it("errors when an event that straddles chunk edges exceeds maxBufferSize", async () => {
