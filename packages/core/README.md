@@ -660,7 +660,7 @@ const agent = new Agent({
     savePolicy: "message",
     compaction: {
       trigger: { afterTokens: 32_000 },
-      retention: { recentTokens: 8_000 },
+      retention: { recentTurns: 4 },
       compactor,
       conflictRetries: false,
     },
@@ -679,10 +679,25 @@ for await (const event of agent.stream({ prompt: "What did we decide?", session 
 }
 ```
 
-The trigger includes the stored transcript and the incoming user message. Retention keeps as many
-recent complete user-led turns as fit the configured budget; the newest complete turn is always
-kept and never split, even when it exceeds that budget. When `retention` is omitted, it defaults to
-25% of `afterTokens`.
+### Retention API design
+
+- **Public option:** `retention: { recentTurns: N }`.
+- **Counting unit:** a user-led turn, not an individual message. Each `user` message starts a turn;
+  every following `assistant`, `tool`, or `system` message belongs to it until the next `user`
+  message. Tool calls and results therefore cannot be split at the compaction boundary.
+- **Default:** omitting `retention` resolves to `{ recentTurns: 1 }`.
+- **Validation:** `N` must be a nonnegative safe integer. Fractions, negative values, infinity, and
+  specifying both retention modes are rejected.
+- **Boundaries:** exactly the last `N` complete stored turns remain unsummarized. `N = 0` summarizes
+  the whole stored transcript when it contains a user-led turn. If at most `N` turns exist,
+  compaction is a no-op.
+- **Leading messages:** messages before the first `user` do not count as a turn. When older turns
+  are summarized, this leading prefix is summarized with them.
+- **Trigger interaction:** the stored transcript plus incoming user message is compared with
+  `afterTokens`, but the incoming message is not part of the stored-turn retention count.
+  `afterTokens` remains only the automatic trigger threshold and does not cap retained turns.
+- **Compatibility:** deprecated `{ recentTokens: N }` remains supported with its previous
+  whole-turn semantics. It is mutually exclusive with `recentTurns`.
 
 The built-in token counter is a lightweight provider-neutral estimate. Pass `tokenCounter` when you
 have a model-specific tokenizer or counting service. A custom counter may be async, can be called
@@ -691,11 +706,19 @@ multiple times, and must return deterministic, monotonic, nonnegative safe integ
 ```ts
 compaction: {
   trigger: { afterTokens: 32_000 },
-  retention: { recentTokens: 8_000 },
+  retention: { recentTurns: 4 },
   tokenCounter: (messages) => tokenizer.count(messages),
   compactor,
 }
 ```
+
+For migration, the deprecated `retention: { recentTokens: N }` form remains supported with its
+previous semantics: it keeps as many complete recent user-led turns as fit the token budget and
+always keeps the newest turn. `recentTokens` must be positive and less than `afterTokens`.
+`recentTurns` and `recentTokens` are mutually exclusive; use `recentTurns` for deterministic
+count-based retention. Omitting `retention` previously used
+`Math.floor(afterTokens / 4)` as a token budget and now retains one turn. To preserve the old
+implicit behavior during migration, set that value explicitly as `recentTokens`.
 
 You can force the configured policy without starting an Agent run. The result makes a no-op
 explicit rather than throwing:
