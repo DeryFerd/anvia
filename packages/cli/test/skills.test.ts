@@ -31,6 +31,18 @@ function skillSource(name: string, relativePath: string): string {
   return readFileSync(join(skillsDirectory, name, relativePath), "utf8");
 }
 
+/**
+ * Assert a copied skill script carries the executable bit.
+ *
+ * POSIX file modes cannot be represented on Windows, where `chmod` is a no-op, so the
+ * assertion only holds on POSIX. The mode is still checked there; on Windows the copy
+ * itself is covered by the surrounding existence and content assertions.
+ */
+function expectExecutableScript(path: string): void {
+  if (process.platform === "win32") return;
+  expect(statSync(path).mode & 0o111).not.toBe(0);
+}
+
 describe("skillNames", () => {
   it("lists every bundled skill", () => {
     expect(skillNames({ skillsDirectory })).toEqual(expectedSkills);
@@ -45,9 +57,7 @@ describe("initSkills", () => {
     expect(report.map((skill) => skill.name)).toEqual(expectedSkills);
     expect(report.every((skill) => skill.installed && skill.complete)).toBe(true);
     expect(existsSync(skillPath(cwd, "anvia-agent", "SKILL.md"))).toBe(true);
-    expect(statSync(skillPath(cwd, "anvia-agent", "scripts/check-agent.sh")).mode & 0o111).not.toBe(
-      0,
-    );
+    expectExecutableScript(skillPath(cwd, "anvia-agent", "scripts/check-agent.sh"));
     expect(existsSync(join(cwd, "skills", "README.md"))).toBe(false);
     expect(readFileSync(skillPath(cwd, "anvia-rag", "SKILL.md"), "utf8")).toBe(
       skillSource("anvia-rag", "SKILL.md"),
@@ -150,10 +160,9 @@ describe("adapter targets", () => {
     const result = initSkills({ cwd, targets: ["claude"], skillsDirectory });
     expect(existsSync(join(cwd, ".claude", "skills", "anvia-agent", "SKILL.md"))).toBe(true);
     expect(existsSync(skillPath(cwd, "anvia-agent", "SKILL.md"))).toBe(true);
-    expect(
-      statSync(join(cwd, ".claude", "skills", "anvia-agent", "scripts", "check-agent.sh")).mode &
-        0o111,
-    ).not.toBe(0);
+    expectExecutableScript(
+      join(cwd, ".claude", "skills", "anvia-agent", "scripts", "check-agent.sh"),
+    );
     const claude = result.targets.find((target) => target.target === "claude");
     expect(claude?.created.length).toBeGreaterThan(0);
     const second = initSkills({ cwd, targets: ["claude"], skillsDirectory });
