@@ -50,6 +50,20 @@ export type SqliteSessionStoreOptions = {
   path?: string;
 };
 
+/** A SQLite-backed Studio store plus an explicit handle release. */
+export type SqliteSessionStoreHandle = StudioSessionStore &
+  StudioTraceStore &
+  StudioPipelineLogStore &
+  StudioPipelineRunStore & {
+    /**
+     * Releases the underlying SQLite handle. Safe to call more than once; the store
+     * reopens lazily on the next call. Closing matters because the database file stays
+     * locked while the handle is open, which blocks removing or relocating its directory
+     * on Windows (`EPERM`).
+     */
+    close(): void;
+  };
+
 type DatabaseSyncConstructor = typeof DatabaseSyncType;
 
 let DatabaseSync: DatabaseSyncConstructor | undefined;
@@ -167,7 +181,7 @@ type PipelineRunRow = {
 
 export function createSqliteSessionStore(
   options: SqliteSessionStoreOptions = {},
-): StudioSessionStore & StudioTraceStore & StudioPipelineLogStore & StudioPipelineRunStore {
+): SqliteSessionStoreHandle {
   return new SqliteSessionStore(options.path ?? ":memory:");
 }
 
@@ -190,6 +204,17 @@ class SqliteSessionStore
   private db: DatabaseSyncType | undefined;
 
   constructor(private readonly path: string) {}
+
+  /**
+   * Releases the SQLite handle so the database file is no longer locked. Safe to call
+   * repeatedly; the store reopens lazily on the next operation.
+   */
+  close(): void {
+    if (this.db === undefined) return;
+    const db = this.db;
+    this.db = undefined;
+    db.close();
+  }
 
   listSessions(options: StudioSessionListOptions): StudioSessionSummary[] {
     const db = this.database();
@@ -959,12 +984,13 @@ class SqliteSessionStore
       allowUnknownNamedParameters: true,
       timeout: 5000,
     });
-    db.exec(`
+    try {
+      db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
     `);
-    guardAgainstLegacySessionSchema(db);
-    db.exec(`
+      guardAgainstLegacySessionSchema(db);
+      db.exec(`
       CREATE TABLE IF NOT EXISTS anvia_studio_sessions (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -1076,11 +1102,18 @@ class SqliteSessionStore
       CREATE INDEX IF NOT EXISTS anvia_studio_traces_session_started_idx
         ON anvia_studio_traces(session_id, started_at DESC);
     `);
-    ensureSessionCompactionStateColumn(db);
-    ensureMessageMetadataColumn(db);
+      ensureSessionCompactionStateColumn(db);
+      ensureMessageMetadataColumn(db);
 
-    this.db = db;
-    return db;
+      this.db = db;
+      return db;
+    } catch (error) {
+      // Schema setup failed after the handle opened (for example the legacy messages_json
+      // guard). Release it so the database file is not left locked, and rethrow so the
+      // caller sees the real cause instead of a stale, half-initialized handle.
+      db.close();
+      throw error;
+    }
   }
 
   private getSessionRow(id: string): SessionRow | undefined {

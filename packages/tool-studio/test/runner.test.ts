@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -49,7 +49,7 @@ import {
   type StudioSessionRunTranscriptInput,
 } from "../src/index";
 import { registerObservabilityRoutes, StudioObservabilityHub } from "../src/runtime/observability";
-import { createSqliteSessionStore } from "../src/sqlite";
+import { createSqliteSessionStore, type SqliteSessionStoreOptions } from "../src/sqlite";
 
 const { DatabaseSync } = createRequire(import.meta.url)(
   "node:sqlite",
@@ -439,11 +439,25 @@ const addTool = {
 
 let studioDbDir: string | undefined;
 
+// Stores created by a test are released before the temp directory is removed. An open
+// SQLite handle keeps the database file locked, so removing its directory fails with
+// EPERM on Windows until the store is closed.
+const openSqliteStores: Array<{ close(): void }> = [];
+
+function createTestSqliteStore(
+  options: SqliteSessionStoreOptions = {},
+): ReturnType<typeof createSqliteSessionStore> {
+  const store = createSqliteSessionStore(options);
+  openSqliteStores.push(store);
+  return store;
+}
+
 beforeEach(() => {
   studioDbDir = mkdtempSync(join(tmpdir(), "anvia-studio-test-"));
 });
 
 afterEach(() => {
+  for (const store of openSqliteStores.splice(0)) store.close();
   if (studioDbDir !== undefined) {
     rmSync(studioDbDir, { force: true, recursive: true });
     studioDbDir = undefined;
@@ -1091,7 +1105,7 @@ describe("Anvia studio", () => {
     const studioDbPath = join(studioDbDir ?? tmpdir(), "pipeline.sqlite");
     const runner = new Studio([pipeline], {
       stores: {
-        sessions: createSqliteSessionStore({ path: studioDbPath }),
+        sessions: createTestSqliteStore({ path: studioDbPath }),
       },
     });
 
@@ -1262,7 +1276,7 @@ describe("Anvia studio", () => {
       name: "Shape",
       run: ({ input }) => ({ reply: input.toUpperCase() }),
     });
-    const store = createSqliteSessionStore({
+    const store = createTestSqliteStore({
       path: join(studioDbDir ?? tmpdir(), "replay.sqlite"),
     });
     const runner = new Studio([pipeline], {
@@ -1301,7 +1315,7 @@ describe("Anvia studio", () => {
   it("loads pipeline runs by exact id from built-in stores", () => {
     const stores = [
       createInMemoryStudioStore(),
-      createSqliteSessionStore({ path: join(studioDbDir ?? tmpdir(), "exact-run.sqlite") }),
+      createTestSqliteStore({ path: join(studioDbDir ?? tmpdir(), "exact-run.sqlite") }),
     ];
 
     for (const store of stores) {
@@ -3262,7 +3276,7 @@ describe("Anvia studio", () => {
     const agent = new Agent({ id: "support", model });
     const runner = new Studio([agent], {
       stores: {
-        sessions: createSqliteSessionStore({ path }),
+        sessions: createTestSqliteStore({ path }),
       },
     });
 
@@ -3313,7 +3327,7 @@ describe("Anvia studio", () => {
 
     const reloadedRunner = new Studio([new Agent({ id: "support", model: new QueueModel([]) })], {
       stores: {
-        sessions: createSqliteSessionStore({ path }),
+        sessions: createTestSqliteStore({ path }),
       },
     });
     const loaded = await reloadedRunner.fetch(
@@ -4715,8 +4729,49 @@ describe("Anvia studio", () => {
     ).resolves.toMatchObject({ messages: [replacement] });
   });
 
+  it("releases the SQLite handle so the database directory can be removed", async () => {
+    const directory = join(studioDbDir ?? tmpdir(), "close-lifecycle");
+    const store = createSqliteSessionStore({ path: join(directory, "studio.sqlite") });
+    store.createSession({ id: "session_1", agentId: "support" });
+
+    store.close();
+
+    // An open SQLite handle keeps the database file locked on Windows, so removing the
+    // directory fails with EPERM until the store releases it.
+    expect(() => rmSync(directory, { force: true, recursive: true })).not.toThrow();
+  });
+
+  it("releases the handle when schema setup fails so the database can be recreated", () => {
+    const directory = join(studioDbDir ?? tmpdir(), "failed-init");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "legacy.sqlite");
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE anvia_studio_sessions (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        title TEXT,
+        metadata_json TEXT,
+        messages_json TEXT NOT NULL,
+        transcript_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `);
+    db.close();
+
+    const store = createSqliteSessionStore({ path });
+    expect(() => store.createSession({ id: "session_1", agentId: "support" })).toThrow(
+      "legacy messages_json schema",
+    );
+
+    // The error tells the user to delete or recreate the database. That only works if the
+    // failed initialization released its handle instead of leaking it.
+    expect(() => rmSync(directory, { force: true, recursive: true })).not.toThrow();
+  });
+
   it("uses the SQLite session store as a core memory store", async () => {
-    const store = createSqliteSessionStore({ path: ":memory:" });
+    const store = createTestSqliteStore({ path: ":memory:" });
     store.createSession({ id: "session_1", agentId: "support" });
 
     await store.append({
@@ -4788,7 +4843,7 @@ describe("Anvia studio", () => {
   });
 
   it("atomically checkpoints SQLite memory prefixes without replacing canonical messages", async () => {
-    const store = createSqliteSessionStore({ path: ":memory:" });
+    const store = createTestSqliteStore({ path: ":memory:" });
     store.createSession({ id: "session_1", agentId: "support" });
     const retained = [
       Message.user([{ type: "text", text: "recent" }]),
@@ -4873,7 +4928,7 @@ describe("Anvia studio", () => {
   });
 
   it("rejects non-JSON message metadata in the SQLite session store", async () => {
-    const store = createSqliteSessionStore({ path: ":memory:" });
+    const store = createTestSqliteStore({ path: ":memory:" });
     store.createSession({ id: "session_1", agentId: "support" });
     const invalidMessage = {
       ...Message.user("hi"),
@@ -4893,7 +4948,7 @@ describe("Anvia studio", () => {
 
   it("persists session messages and parts in normalized SQLite tables", async () => {
     const path = join(studioDbDir ?? tmpdir(), "normalized.sqlite");
-    const store = createSqliteSessionStore({ path });
+    const store = createTestSqliteStore({ path });
     store.createSession({ id: "session_1", agentId: "support" });
 
     const messages = [
@@ -4977,7 +5032,7 @@ describe("Anvia studio", () => {
     ).toEqual({ count: 4 });
     db.close();
 
-    const reloaded = createSqliteSessionStore({ path });
+    const reloaded = createTestSqliteStore({ path });
     await expect(reloaded.load({ scope: { sessionId: "session_1" } })).resolves.toEqual(messages);
     expect(await reloaded.getSession("session_1")).toMatchObject({
       id: "session_1",
@@ -5031,7 +5086,7 @@ describe("Anvia studio", () => {
     `);
     db.close();
 
-    const store = createSqliteSessionStore({ path });
+    const store = createTestSqliteStore({ path });
     await expect(store.load({ scope: { sessionId: "session_1" } })).resolves.toEqual([
       Message.user([{ type: "text", text: "legacy" }]),
     ]);
@@ -5060,7 +5115,7 @@ describe("Anvia studio", () => {
   });
 
   it("persists session audit logs with monotonic sequence and deletes them with sessions", async () => {
-    const store = createSqliteSessionStore({ path: ":memory:" });
+    const store = createTestSqliteStore({ path: ":memory:" });
     store.createSession({ id: "session_1", agentId: "support" });
 
     const first = await store.appendSessionLog?.({
@@ -5112,7 +5167,7 @@ describe("Anvia studio", () => {
     `);
     db.close();
 
-    const store = createSqliteSessionStore({ path });
+    const store = createTestSqliteStore({ path });
     expect(() => store.createSession({ id: "session_1", agentId: "support" })).toThrow(
       "legacy messages_json schema",
     );

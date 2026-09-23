@@ -248,6 +248,18 @@ new Studio([agent], {
 }).start();
 ```
 
+The store is caller-owned, so release it when the application shuts down. `close()` releases the SQLite handle and the store reopens lazily on the next call:
+
+```ts
+const store = createSqliteSessionStore({ path: ".anvia/studio.sqlite" });
+
+await new Studio([agent], { stores: { sessions: store } }).serve({
+  onShutdown: () => store.close(),
+});
+```
+
+Closing matters on Windows, where an open handle keeps the database file locked and blocks removing or moving its directory. If schema setup fails while opening the database, the store closes the handle before reporting the error, so deleting or recreating the file works as the error message suggests.
+
 SQLite storage uses dedicated `anvia_studio_*` tables so it can share an application database without writing into product tables.
 
 ## Exports
