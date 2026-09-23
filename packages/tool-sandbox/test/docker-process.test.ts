@@ -13,41 +13,54 @@ afterEach(async () => {
 });
 
 describe("DockerProcessManager abort lifecycle", () => {
-  it("keeps the Docker exec session attached after acknowledging startup", async () => {
-    const dockerPath = await fakeDockerCli();
-    const manager = createManager(dockerPath);
+  // The fake Docker CLI below is a POSIX shebang script. Node cannot spawn a script file
+  // directly on Windows (spawn ENOENT), and a `.cmd` shim would need `shell: true`, which
+  // the manager must not use. The lifecycle logic under test is platform-agnostic, so it
+  // still runs in full on POSIX; on Windows it is skipped rather than failing the suite.
+  it.skipIf(process.platform === "win32")(
+    "keeps the Docker exec session attached after acknowledging startup",
+    async () => {
+      const dockerPath = await fakeDockerCli();
+      const manager = createManager(dockerPath);
 
-    const process = await manager.start({ command: "server" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+      const process = await manager.start({ command: "server" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(manager.list()).toEqual([process]);
-    await manager.dispose();
-  });
+      expect(manager.list()).toEqual([process]);
+      await manager.dispose();
+    },
+  );
 
-  it("does not retain the startup abort signal as process ownership", async () => {
-    const dockerPath = await fakeDockerCli();
-    const manager = createManager(dockerPath);
-    const controller = new AbortController();
+  it.skipIf(process.platform === "win32")(
+    "does not retain the startup abort signal as process ownership",
+    async () => {
+      const dockerPath = await fakeDockerCli();
+      const manager = createManager(dockerPath);
+      const controller = new AbortController();
 
-    const process = await manager.start({ command: "server", abortSignal: controller.signal });
-    controller.abort();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+      const process = await manager.start({ command: "server", abortSignal: controller.signal });
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(manager.list()).toEqual([process]);
-    await manager.dispose();
-  });
+      expect(manager.list()).toEqual([process]);
+      await manager.dispose();
+    },
+  );
 
-  it("kills and forgets a process whose startup is aborted before the marker", async () => {
-    const dockerPath = await fakeDockerCli();
-    const manager = createManager(dockerPath);
-    const controller = new AbortController();
-    const starting = manager.start({ command: "delay-marker", abortSignal: controller.signal });
-    setTimeout(() => controller.abort(new DOMException("cancelled", "AbortError")), 20);
+  it.skipIf(process.platform === "win32")(
+    "kills and forgets a process whose startup is aborted before the marker",
+    async () => {
+      const dockerPath = await fakeDockerCli();
+      const manager = createManager(dockerPath);
+      const controller = new AbortController();
+      const starting = manager.start({ command: "delay-marker", abortSignal: controller.signal });
+      setTimeout(() => controller.abort(new DOMException("cancelled", "AbortError")), 20);
 
-    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
-    expect(manager.list()).toEqual([]);
-    await manager.dispose();
-  });
+      await expect(starting).rejects.toMatchObject({ name: "AbortError" });
+      expect(manager.list()).toEqual([]);
+      await manager.dispose();
+    },
+  );
 });
 
 function createManager(dockerPath: string): DockerProcessManager {
