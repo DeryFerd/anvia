@@ -32,6 +32,13 @@ Networking is explicit. Use `{ mode: "none" }` or `{ mode: "bridge", ports: [...
 bind only to `127.0.0.1`. Runtime methods use object arguments, propagate abort signals, and expose
 command and process output as bytes. Tool wrappers decode UTF-8 strictly and return structured values.
 
+`exec_command` accepts a complete shell command line in `command`, including pipes, redirects, and
+multiline scripts. For exact argv execution without shell parsing, provide the executable in
+`command` and its arguments in `args`. Command policies apply to the implicit `sh` executable when a
+shell command line is used. Natural command lines are rejected with block-mode command policies
+because arbitrary shell syntax cannot be checked safely against an executable block list; use exact
+`command` and `args` input in that configuration.
+
 File paths and command working directories passed to agent tools may be workspace-relative (for
 example `notes/result.txt`) or absolute paths inside the sandbox workdir (for example
 `/workspace/notes/result.txt` with the default workdir). Paths outside the sandbox workdir are
