@@ -131,7 +131,10 @@ const envValueFlags = new Set(["--env", "-e"]);
 /**
  * Replace secret values in a Docker argv before it is embedded in an error message, so
  * environment values passed with `--env`/`-e` never reach logs or traces. The variable
- * name is kept visible to keep the failure diagnosable.
+ * name is kept visible to keep the failure diagnosable. Both the separated
+ * (`--env KEY=VALUE`) and equals-delimited (`--env=KEY=VALUE`) spellings are covered, as
+ * well as the attached short-flag spelling (`-eKEY=VALUE`) that Docker's flag parser
+ * accepts for the `-e` shorthand.
  */
 function redactCliArgs(args: string[]): string[] {
   return args.map((arg, index) => {
@@ -142,6 +145,8 @@ function redactCliArgs(args: string[]): string[] {
       if (arg.startsWith(prefix))
         return `${prefix}${redactEnvAssignment(arg.slice(prefix.length))}`;
     }
+    if (arg.startsWith("-e") && !arg.startsWith("-e=") && arg.length > 2)
+      return `-e${redactEnvAssignment(arg.slice(2))}`;
     return arg;
   });
 }

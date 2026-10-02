@@ -38,6 +38,30 @@ describe("assertDockerCli failure message", () => {
     expect(message).not.toContain("tok-abcdef123");
   });
 
+  it("does not leak environment values passed with --env= equals form", async () => {
+    const message = await failureMessage([
+      "run",
+      "-d",
+      "--env=OPENAI_API_KEY=sk-supersecret123",
+      "image:latest",
+    ]);
+
+    expect(message).not.toContain("sk-supersecret123");
+    expect(message).toContain("--env=OPENAI_API_KEY=<redacted>");
+  });
+
+  it("does not leak environment values passed with attached -e shorthand", async () => {
+    const message = await failureMessage([
+      "run",
+      "-d",
+      "-eOPENAI_API_KEY=sk-supersecret123",
+      "image:latest",
+    ]);
+
+    expect(message).not.toContain("sk-supersecret123");
+    expect(message).toContain("-eOPENAI_API_KEY=<redacted>");
+  });
+
   it("keeps the variable name and the failing command readable", async () => {
     const message = await failureMessage([
       "run",
