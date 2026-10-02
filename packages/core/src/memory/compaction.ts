@@ -202,7 +202,7 @@ function serializeToolOutput(output: ToolResultOutput): string {
     return truncateForSummary(safeJson(output.value), MAX_TOOL_OUTPUT_CHARS);
   }
   if (output.type === "execution-denied") {
-    return output.reason ?? "Tool execution was denied.";
+    return truncateForSummary(output.reason ?? "Tool execution was denied.", MAX_TOOL_OUTPUT_CHARS);
   }
   return truncateForSummary(
     output.value
