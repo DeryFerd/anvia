@@ -103,19 +103,35 @@ behavior belongs in `packages/tool-studio`.
   runtime, streaming, UI messages, extractors, pipelines, evals, embeddings,
   loaders, MCP, memory, model listing, observability, redaction, skills, transcription,
   audio/image generation, and vector-store contracts.
+- `packages/cli`: CLI entrypoint for installing editable Anvia UI components into
+  React applications and scaffolding the bundled Agent Skills (`skills init`).
+  Its build bundles the `skills/` folder.
+- `packages/client`: framework-neutral client protocol, transports, and UI
+  message state for Anvia.
 - `packages/mcp`: MCP clients, transports, tool discovery, result mapping, and URL safety.
 - `packages/provider-openai`, `packages/provider-anthropic`,
-  `packages/provider-gemini`, `packages/provider-mistral`: provider adapters
+  `packages/provider-gemini`, `packages/provider-grok`,
+  `packages/provider-mistral`: provider adapters
   mapping Anvia completion/embedding/media contracts to vendor SDKs.
 - `packages/vector-chroma`, `packages/vector-lancedb`,
   `packages/vector-milvus`, `packages/vector-pgvector`,
   `packages/vector-pinecone`, `packages/vector-qdrant`,
   `packages/vector-redis`, `packages/vector-weaviate`: vector store adapters.
+- `packages/memory-drizzle`, `packages/memory-postgres`,
+  `packages/memory-prisma`, `packages/memory-sqlite`: durable session memory
+  store adapters backed by Drizzle, Postgres, Prisma, and SQLite.
+- `packages/graph`: provider-neutral knowledge graph primitives for GraphRAG.
+- `packages/graph-memgraph`, `packages/graph-neo4j` (published as
+  `@anvia/memgraph` and `@anvia/neo4j`): schema-first Memgraph and Neo4j
+  GraphRAG adapters.
 - `packages/embedding-transformers`: local embedding adapter.
-- `packages/observability-langfuse`, `packages/observability-otel`: tracing,
+- `packages/observability-langfuse`, `packages/observability-lens`,
+  `packages/observability-otel`: tracing,
   eval reporting, scoring, prompt/dataset helpers, and OpenTelemetry adapters.
 - `packages/logger`: console, pino, and observer logger helpers.
 - `packages/react`: React hooks and transports for chat/completion UI streams.
+- `packages/react-ui`: composable, headless React UI primitives for Anvia
+  applications.
 - `packages/server`: JSONL, SSE, and UI stream response helpers.
 - `packages/tool-sandbox`: Docker-backed sandbox tools. Docker integration tests
   are gated by `ANVIA_SANDBOX_DOCKER_TESTS=1`.
