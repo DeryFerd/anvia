@@ -1,6 +1,20 @@
 import type { EmbeddedDocument, VectorMetadata } from "@anvia/core/embeddings";
 import type { VectorSearchResult } from "@anvia/core/vector-store";
-import type { ChromaClientLike, ChromaCollectionLike, ChromaVectorStoreOptions } from "./types.js";
+import {
+  type ChromaClientLike,
+  type ChromaCollectionLike,
+  type ChromaVectorStoreOptions,
+  documentIdMetadataKey,
+  reservedMetadataPrefix,
+} from "./types.js";
+
+export function assertNoReservedMetadata(metadata: VectorMetadata | undefined): void {
+  for (const key of Object.keys(metadata ?? {})) {
+    if (key.startsWith(reservedMetadataPrefix)) {
+      throw new Error(`Metadata key ${key} is reserved for Anvia Chroma metadata`);
+    }
+  }
+}
 
 export function serializeDocument(document: unknown): string {
   return typeof document === "string" ? document : JSON.stringify(document);
@@ -32,7 +46,7 @@ export function chromaRecords<T, Metadata extends VectorMetadata>(
   return document.embeddings.map((embedding, index) => ({
     id: document.embeddings.length === 1 ? document.id : `${document.id}#embedding:${index}`,
     document: serializeDocument(document.document),
-    metadata: { ...document.metadata, __anvia_document_id: document.id },
+    metadata: { ...document.metadata, [documentIdMetadataKey]: document.id },
     embedding: embedding.vector,
   }));
 }
@@ -76,7 +90,7 @@ export function parseQueryResults<T, Metadata extends VectorMetadata>(
     };
     const metadata = metadatas[index];
     if (metadata !== null && metadata !== undefined) {
-      const { __anvia_document_id: _documentId, ...publicMetadata } = metadata;
+      const { [documentIdMetadataKey]: _documentId, ...publicMetadata } = metadata;
       if (Object.keys(publicMetadata).length > 0) result.metadata = publicMetadata as Metadata;
     }
     return [result];

@@ -8,12 +8,17 @@ import type {
 import type { ChromaVectorClient } from "./client.js";
 import { filterToChromaWhere } from "./filters.js";
 import {
+  assertNoReservedMetadata,
   chromaRecords,
   chromaResultCount,
   getOrCreateCollection,
   parseQueryResults,
 } from "./helpers.js";
-import type { ChromaCollectionLike, ChromaVectorStoreOptions } from "./types.js";
+import {
+  type ChromaCollectionLike,
+  type ChromaVectorStoreOptions,
+  documentIdMetadataKey,
+} from "./types.js";
 
 export class ChromaVectorStore<
   T,
@@ -51,9 +56,10 @@ export class ChromaVectorStore<
   async upsert(options: VectorStoreUpsertOptions<T, Metadata>): Promise<void> {
     validateDocuments(options.documents, this.options.dimensions);
     if (options.documents.length === 0) return;
+    for (const document of options.documents) assertNoReservedMetadata(document.metadata);
     const collection = await this.collection();
     const documentIds = options.documents.map((document) => document.id);
-    await collection.delete({ where: { __anvia_document_id: { $in: documentIds } } });
+    await collection.delete({ where: { [documentIdMetadataKey]: { $in: documentIds } } });
     const records = options.documents.flatMap((document) => chromaRecords(document));
     if (records.length === 0) return;
     const request: Record<string, unknown> = {

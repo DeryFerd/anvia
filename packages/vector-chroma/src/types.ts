@@ -1,5 +1,8 @@
 import type { VectorMetric } from "@anvia/core/vector-store";
 
+export const documentIdMetadataKey = "__anvia_document_id";
+export const reservedMetadataPrefix = "__anvia_";
+
 export type ChromaClientLike = {
   getCollection(options: Record<string, unknown>): Promise<ChromaCollectionLike>;
   createCollection(options: Record<string, unknown>): Promise<ChromaCollectionLike>;

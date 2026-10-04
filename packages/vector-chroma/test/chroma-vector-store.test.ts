@@ -62,6 +62,29 @@ describe("ChromaVectorClient", () => {
     );
   });
 
+  it("rejects documents whose metadata uses the reserved __anvia_ prefix", async () => {
+    const { client, collection } = fixture();
+    const store = new ChromaVectorClient({ client }).vectorStore<{ text: string }>({
+      collectionName: "docs",
+      dimensions: 2,
+    });
+
+    await expect(
+      store.upsert({
+        documents: [
+          {
+            id: "doc",
+            document: { text: "cat" },
+            metadata: { __anvia_document: "spoofed" },
+            embeddings: [{ document: "cat", vector: [1, 0] }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/reserved for Anvia Chroma/);
+    expect(collection.delete).not.toHaveBeenCalled();
+    expect(collection.upsert).not.toHaveBeenCalled();
+  });
+
   it("expands physical candidates until topK logical documents are available", async () => {
     const query = vi.fn(async (options: Record<string, unknown>) => {
       const candidates = [
