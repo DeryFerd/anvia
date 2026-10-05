@@ -23,6 +23,7 @@ export type LoggerObserverOptions = {
   includeRequest?: boolean | undefined;
   includeResponse?: boolean | undefined;
   includeToolResult?: boolean | undefined;
+  includeErrorStack?: boolean | undefined;
 };
 
 export function createLoggerObserver(
@@ -120,7 +121,7 @@ class LoggerRunObserver implements AgentRunObserver {
   error(args: AgentRunErrorArgs): void {
     const context = {
       status: args.status,
-      error: serializeError(args.error),
+      error: serializeError(args.error, this.options),
       usage: args.usage,
       messageCount: args.messages.length,
     };
@@ -180,7 +181,7 @@ class LoggerGenerationObserver implements AgentGenerationObserver {
   error(args: AgentGenerationErrorArgs): void {
     this.logger.error("agent generation failed", {
       turn: args.turn,
-      error: serializeError(args.error),
+      error: serializeError(args.error, this.options),
     });
   }
 }
@@ -219,7 +220,7 @@ class LoggerToolObserver implements AgentToolObserver {
 
   error(args: AgentToolErrorArgs): void {
     this.logger.error("agent tool failed", {
-      error: serializeError(args.error),
+      error: serializeError(args.error, this.options),
     });
   }
 }
@@ -263,7 +264,12 @@ const COMPLETION_PROVIDER_OUTPUT_ERROR_KINDS = new Set([
   "filtered-tool-call",
 ]);
 
-function serializeError(error: unknown, seen = new Set<object>(), depth = 0): unknown {
+function serializeError(
+  error: unknown,
+  options: LoggerObserverOptions,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown {
   if (error instanceof Error) {
     if (seen.has(error)) return "[Circular error cause]";
     if (depth >= MAX_SERIALIZED_ERROR_CAUSE_DEPTH) return "[Error cause depth limit]";
@@ -277,8 +283,10 @@ function serializeError(error: unknown, seen = new Set<object>(), depth = 0): un
       : {
           name: error.name,
           message: error.message,
-          stack: error.stack,
         };
+    if (!providerOutputError && options.includeErrorStack === true) {
+      serialized.stack = error.stack;
+    }
     if (isStructuredOutputError(error)) {
       addStructuredOutputMetadata(serialized, error);
     }
@@ -289,7 +297,7 @@ function serializeError(error: unknown, seen = new Set<object>(), depth = 0): un
       if (isStructuredOutputError(error)) {
         serialized.cause = structuredOutputCauseMetadata(error.cause);
       } else {
-        serialized.cause = serializeError(error.cause, seen, depth + 1);
+        serialized.cause = serializeError(error.cause, options, seen, depth + 1);
       }
     }
     return serialized;

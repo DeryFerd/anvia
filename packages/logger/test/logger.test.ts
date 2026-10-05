@@ -605,6 +605,57 @@ describe("createLoggerObserver", () => {
     expect(lines[0]?.error).toMatchObject({
       name: "Error",
       message: "Structured output failed",
+      cause: {
+        name: "Error",
+        message: "Invalid JSON",
+        cause: {
+          name: "SyntaxError",
+          message: "Unexpected token",
+        },
+      },
+    });
+    expect(lines[0]?.error).not.toHaveProperty("stack");
+    expect(JSON.stringify(lines[0]?.error)).not.toContain("stack");
+  });
+
+  it("records nested Error cause stacks when includeErrorStack is enabled", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const logger = createPinoLogger({
+      level: "error",
+      destination: {
+        write: (line: string) => {
+          lines.push(JSON.parse(line) as Record<string, unknown>);
+        },
+      },
+    });
+    const observer = createLoggerObserver({ logger, includeErrorStack: true });
+    const run = (await observer.startRun({
+      runId: "run_error_stacks",
+      prompt: { role: "user", content: "hello" },
+      history: [],
+      maxTurns: 1,
+    })) as AgentRunObserver;
+    const rootCause = new SyntaxError("Unexpected token");
+    const nestedCause = new Error("Invalid JSON", { cause: rootCause });
+    const error = new Error("Structured output failed", { cause: nestedCause });
+
+    run.error?.({
+      status: "failed",
+      error,
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      messages: [],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.error).toMatchObject({
+      name: "Error",
+      message: "Structured output failed",
       stack: expect.any(String),
       cause: {
         name: "Error",

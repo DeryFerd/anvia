@@ -49,8 +49,8 @@ const result = await agent.generate({ prompt: "How do I reset my password?" });
 if (result.type === "response") console.log(result.output);
 ```
 
-The logger observer omits final outputs, full model requests, model responses, and tool results by
-default. It records named Core observer events at their requested log level without copying their
+The logger observer omits final outputs, full model requests, model responses, tool results, and error
+stacks by default. It records named Core observer events at their requested log level without copying their
 free-form attributes. In particular,
 `completion.retry` includes attempts, structured-output or provider-output classification, finish
 reason, output lengths, per-attempt and cumulative usage, and whether rejected output was omitted
@@ -58,10 +58,11 @@ or represented by a bounded preview; it never logs that output or malformed tool
 `LoggerObserverOptions` to opt in when your data policy allows the other payloads in logs.
 
 Agent errors are serialized before reaching the configured logger. Nested `Error.cause` chains keep
-their `name`, `message`, and `stack`, including when the destination is Pino. Cause traversal is
-bounded. Structured-output causes are reduced to safe type metadata because parser and schema error
-messages can contain rejected model content; the outer error still records its phase, attempts,
-lengths, usage, finish reasons, and detected format.
+their `name` and `message`, including when the destination is Pino, but `stack` is omitted by default so
+host filesystem paths stay out of shared logs; pass `includeErrorStack: true` to record stacks during
+local debugging. Cause traversal is bounded. Structured-output causes are reduced to safe type metadata
+because parser and schema error messages can contain rejected model content; the outer error still
+records its phase, attempts, lengths, usage, finish reasons, and detected format.
 
 For local development without Pino output, use the console logger:
 
