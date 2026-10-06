@@ -112,6 +112,7 @@ import {
   approvalInteraction,
   ToolExecutionSuspension,
 } from "./interaction-suspension";
+import type { AgentCompletionStream, AgentCompletionStreamEvent } from "./execution";
 import { AgentRunMemory, type MemoryPreparation } from "./memory";
 import { normalizeMemoryScope } from "./memory-scope";
 import { fetchContextDocuments, fetchToolDefinitions } from "./retrieval";
@@ -149,6 +150,17 @@ type StreamingCompletionState = {
   firstDeltaMs: number | undefined;
   emittedToolCallIds: Set<string>;
   providerErrorUsage: Usage;
+};
+
+type StreamingCompletionArgs = {
+  request: CompletionRequest;
+  turn: number;
+  bufferResponseEvents: boolean;
+  bufferOutputDeltas: boolean;
+  generationStartedAt: number;
+  generationObservers: ActiveGenerationObservers;
+  runObservers: ActiveAgentRunObservers;
+  state: StreamingCompletionState;
 };
 
 type StructuredOutputRetryRequest = Readonly<{
@@ -811,27 +823,51 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
           providerErrorUsage: Usage.empty(),
         };
         let response: CompletionResponse;
+        const completionRunObservers = runObservers;
+        const execute = () => {
+          return this.runUncachedStreamingCompletion({
+            request,
+            turn: currentTurns,
+            bufferResponseEvents,
+            bufferOutputDeltas,
+            generationStartedAt,
+            generationObservers,
+            runObservers: completionRunObservers,
+            state: completionState,
+          });
+        };
         try {
           try {
-            for await (const event of this.streamCompletion({
-              request,
-              turn: currentTurns,
-              bufferResponseEvents,
-              bufferOutputDeltas,
-              generationStartedAt,
-              generationObservers,
-              runObservers,
-              state: completionState,
-            })) {
-              yield event;
+            if (this.execution !== undefined) {
+              if (this.execution.streamCompletion === undefined) {
+                throw new TypeError(
+                  "The execution runtime does not support streaming checkpoints.",
+                );
+              }
+              response = yield* this.execution.streamCompletion(currentTurns, request, execute);
+            } else {
+              response = yield* execute();
             }
           } finally {
             usage = Usage.add(usage, completionState.providerErrorUsage);
           }
-          if (completionState.response === undefined) {
-            throw new Error("Streaming completion ended without a response.");
+          // Local observation and post-processing must not make a committed model response retryable.
+          let endArgs: AgentGenerationEndArgs = {
+            turn: currentTurns,
+            response: completionState.response ?? response,
+          };
+          if (completionState.firstDeltaMs !== undefined)
+            endArgs = { ...endArgs, firstDeltaMs: completionState.firstDeltaMs };
+          this.activeGeneration = undefined;
+          await generationObservers.end(endArgs);
+          response = await this.runCompletionResponseMiddlewares(request, response, currentTurns);
+          try {
+            assertCompletionResponseIntegrity({ response });
+          } catch (error) {
+            const providerOutputUsage = completionProviderOutputErrorUsage(error);
+            if (providerOutputUsage !== undefined) usage = Usage.add(usage, providerOutputUsage);
+            throw error;
           }
-          response = completionState.response;
         } catch (error) {
           await settleFailureCleanup([
             () => this.closeActiveGeneration(error),
@@ -841,23 +877,6 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
         }
         const { firstDeltaMs, emittedToolCallIds } = completionState;
 
-        let generationEndArgs: AgentGenerationEndArgs = {
-          turn: currentTurns,
-          response,
-        };
-        if (firstDeltaMs !== undefined) {
-          generationEndArgs = { ...generationEndArgs, firstDeltaMs };
-        }
-        this.activeGeneration = undefined;
-        await generationObservers.end(generationEndArgs);
-        response = await this.runCompletionResponseMiddlewares(request, response, currentTurns);
-        try {
-          assertCompletionResponseIntegrity({ response });
-        } catch (error) {
-          const providerOutputUsage = completionProviderOutputErrorUsage(error);
-          if (providerOutputUsage !== undefined) usage = Usage.add(usage, providerOutputUsage);
-          throw error;
-        }
         usage = Usage.add(usage, response.usage);
         this.updateRunProgress(newMessages);
         await this.runCompletionResponseHook(prompt, response, newMessages);
@@ -1150,16 +1169,9 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
     return this.runCompletionRequestMiddlewares(request, turn);
   }
 
-  private async *streamCompletion(args: {
-    request: CompletionRequest;
-    turn: number;
-    bufferResponseEvents: boolean;
-    bufferOutputDeltas: boolean;
-    generationStartedAt: number;
-    generationObservers: ActiveGenerationObservers;
-    runObservers: ActiveAgentRunObservers;
-    state: StreamingCompletionState;
-  }): AsyncIterable<AgentStreamEvent<Output, RawResponseOf<M>>> {
+  private async *runUncachedStreamingCompletion(
+    args: StreamingCompletionArgs,
+  ): AgentCompletionStream {
     const model = this.agent.model;
     if (!isStreamingCompletionModel(model)) {
       throw new TypeError("Streaming completion requires a streaming-capable model.");
@@ -1204,7 +1216,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
               (args.bufferOutputDeltas &&
                 (mapped.type === "text_delta" || mapped.type === "reasoning_delta"));
             if (!shouldBuffer) {
-              yield addTurn(args.turn, mapped) as AgentStreamEvent<Output, RawResponseOf<M>>;
+              yield addTurn(args.turn, mapped) as AgentCompletionStreamEvent;
             }
           }
         }
@@ -1241,7 +1253,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
           ? response
           : { ...response, usage: cumulativeStructuredUsage };
         args.state.providerErrorUsage = Usage.empty();
-        return;
+        return args.state.response;
       } catch (error) {
         if (!recordedErrorUsage) {
           const attemptUsage = completionProviderOutputErrorUsage(error);

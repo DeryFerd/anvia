@@ -11,7 +11,7 @@ import type { JsonValue, Message, Usage } from "@anvia/core/completion";
 
 export type ToolRecovery = "safe" | "idempotent" | "manual";
 
-/** Opt-in retries for core completion-attempt errors, including validation and observers. */
+/** Opt-in retries for model execution/validation errors; observer and journal failures are excluded. */
 export type DurableModelRetry = {
   maxAttempts: number;
   initialDelayMs: number;
@@ -22,6 +22,8 @@ export type DurableAgentRegistration = {
   agent: Agent<unknown>;
   /** Bump whenever code, model, tools, schemas, or instructions change incompatibly. */
   version: string;
+  /** Use agent.stream() and persist normalized generation deltas. Defaults to false. */
+  stream?: boolean;
   /** Unlisted tools require reconciliation if interrupted after their intent was committed. */
   toolRecovery?: Readonly<Record<string, ToolRecovery>>;
   modelRetry?: DurableModelRetry;
@@ -67,6 +69,8 @@ export type DurableRunRecord = DurableSubmission & {
   blockedOperation?: string;
   modelRetry?: DurableModelRetry;
   nextAttemptAt?: string;
+  /** Captured at submission; older records continue using generate(). */
+  stream?: boolean;
   responses: Record<string, JsonValue>;
 };
 
@@ -79,6 +83,8 @@ export type DurableOperation = {
   result?: JsonValue | undefined;
   /** Persisted before each completion attempt, including interrupted attempts; reset by explicit retry(). */
   attempts?: number | undefined;
+  /** Unique streaming attempt identity, retained even when retry() resets the attempt budget. */
+  attemptId?: string | undefined;
 };
 
 export type DurableListOptions = {
@@ -119,6 +125,9 @@ export type DurableEvent = {
     | "submitted"
     | "status"
     | "model_started"
+    | "model_attempt_started"
+    | "model_delta"
+    | "model_attempt_failed"
     | "model_completed"
     | "tool_started"
     | "tool_completed";

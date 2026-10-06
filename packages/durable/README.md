@@ -4,7 +4,7 @@ Run Anvia agents with persisted model and tool checkpoints. Submit work, observe
 progress, and recover unfinished runs after a process restart.
 
 Experimental: this first version supports one runtime owner per local SQLite database,
-static local tools, and committed progress events. It does not stream individual tokens.
+static local tools, and committed progress events, with opt-in persisted token streaming.
 
 ## Install
 
@@ -58,6 +58,44 @@ try {
 Keep the runtime alive at application scope in a server. A client disconnect should close
 only that client's subscription. Call `run.cancel()` to explicitly cancel the work.
 
+## Streaming model output
+
+Set `stream: true` on an agent registration to execute it with `agent.stream()`:
+
+```ts
+agents: [{ agent: researcher, version: "1", stream: true }];
+```
+
+The model must support streaming. The option is captured when each run is submitted and
+also applies to graph nodes and owned agent tasks. Registrations without it use `generate()`.
+
+`run.stream()` then includes `model_attempt_started`, `model_delta`, and
+`model_attempt_failed` events. Each carries `operationId` and a unique `attemptId`.
+A `model_delta` has an `event` containing a normalized core generation event, such as
+`{ type: "text_delta", turn: 1, delta: "Hello" }`, reasoning, or tool-call progress.
+Deltas are persisted before subscribers can read them. `model_completed` carries the same
+attempt ID and the validated normalized response; only this response is a model checkpoint.
+The response commits before local completion observers run. A later observer failure fails
+the run while retaining that checkpoint. `model_attempt_failed.failureKind` distinguishes
+`model` execution/validation errors from `local` observer or persistence failures.
+
+Partial output is provisional. On a new `model_attempt_started` for the same operation,
+replace the previous attempt's partial output. Discard partial output on
+`model_attempt_failed` or run cancellation. A crash or shutdown can leave an attempt without
+a failure event; recovery starts a new attempt rather than continuing the previous token stream.
+Completed checkpoints are reused without emitting duplicate deltas.
+
+Reconnect using the last successfully applied event cursor, or replay `run.stream()` from
+zero to reconstruct partial output. Snapshots contain completed responses and the latest
+operation attempt ID, but do not include partial token text. Starting after a fresh snapshot's
+cursor skips earlier deltas. Structured output follows core's buffering rules: text is not
+exposed before schema validation, and the saved result arrives in `model_completed`.
+
+Persisting each exposed delta adds SQLite writes and retained event data. The payload limit
+applies to each delta; configure model output limits and database retention in the host application.
+SQLite schema 4 marks these new records; schemas 1–3 upgrade on acquisition. Older engines
+reject schema 4. Use the matching core release with execution protocol version 2.
+
 ## What survives a restart
 
 - Submissions, deduplicated by `(sessionId, requestId)`; changed content with the same ID is rejected.
@@ -108,9 +146,10 @@ Opt into persisted model backoff on a registration:
 } }
 ```
 
-The policy applies to core completion-attempt errors, including provider errors, completion
-validation, and completion observers. Attempt counts include interrupted
-requests; retry deadlines survive restart. Tool recovery policies remain separate.
+The policy applies to model execution and completion-validation errors. Observer failures and
+local response processing, checkpoint, and quota failures do not trigger another provider request.
+Attempt counts include interrupted requests; retry deadlines survive restart. Tool recovery
+policies remain separate.
 
 `@anvia/server/durable` provides an authorized Fetch handler, and `@anvia/client/durable`
 provides a browser-safe HTTP/SSE client. Reconnect using an atomic snapshot and its event

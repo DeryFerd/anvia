@@ -83,8 +83,18 @@ using `result()` as the sole completion mechanism. Snapshot state includes opera
 errors, `blockedOperation`, and any pending interaction.
 
 `run.stream()` yields persisted `submitted`, `status`, `model_started`, `model_completed`,
-`tool_started`, and `tool_completed` events. It does not provide `textStream` or the live token
-events of `agent.stream()`. Use these events for job progress, then render saved output. Detaching
+`tool_started`, and `tool_completed` events. Set registration `stream: true` to execute via
+`agent.stream()` and additionally persist `model_attempt_started`, `model_delta`, and
+`model_attempt_failed`. Each includes an operation ID and unique attempt ID; `model_delta.event`
+is normalized generation progress. `model_completed` carries that attempt ID and the saved response.
+Replace provisional text on a new attempt for the same operation and discard it on failure or
+cancellation. Completed responses and tools replay without duplicate delta events.
+
+Streaming is captured at submission and requires a streaming-capable model. Partial text is
+not included in snapshots: reconnect from the last applied event cursor or replay from zero.
+Starting after a fresh snapshot cursor skips earlier deltas. Structured output follows core's
+buffering rules; its validated response is saved in `model_completed`. No `textStream` shortcut
+is exposed by durable handles. Detaching
 or aborting a stream/result waiter leaves execution running; use `run.cancel()` to cancel it.
 A reconnect starts from a fresh snapshot cursor or the last successfully applied event sequence.
 Listing pagination cursors and event cursors are different values.
@@ -116,7 +126,8 @@ modelRetry: { maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 30_000 }
 
 The policy is captured at submission. Each model operation has a persisted attempt budget;
 crashes consume an attempt. Backoff waits release capacity and survive restart. This retries
-completion-attempt errors, including permanent provider/validation/observer failures: it has
-no transient classifier or jitter. Tool failures and storage failures use different recovery
+model execution/validation errors, including permanent provider failures: it has
+no transient classifier or jitter. Observer/local post-processing failures do not trigger provider
+retries. Tool failures and storage failures use different recovery
 paths. An explicit `run.retry()` resets unfinished model-attempt counters, not completed results.
 Do not use an unbounded application retry loop around an uncertain external operation.
