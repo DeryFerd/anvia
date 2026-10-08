@@ -25,7 +25,9 @@ function validate(db: DatabaseSync): void {
     throw new Error("Maintenance requires durable schema version 3 or 4.");
 }
 function sync(path: string): void {
-  const fd = openSync(path, "r");
+  // Windows maps fsync to _commit(), which fails with EPERM on a read-only handle;
+  // POSIX fsyncs directories through a read-only handle and cannot open them writable (EISDIR).
+  const fd = openSync(path, process.platform === "win32" ? "r+" : "r");
   try {
     fsyncSync(fd);
   } finally {
