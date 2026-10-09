@@ -50,6 +50,7 @@ export type TaskDefinition<I, S, R> = {
   readonly input: z.ZodType<I>;
   readonly checkpoint: z.ZodType<S>;
   readonly output: z.ZodType<R>;
+  /** Pure initialization; submission authorization may evaluate this before persisting work. */
   readonly initial: (input: I) => S;
   /** Re-entered from the last committed checkpoint; external effects belong in effect(). */
   readonly run: (context: TaskContext<I, S>) => Promise<TaskTransition<S, R>>;
@@ -75,6 +76,8 @@ export type RegisteredTask = {
   parseCheckpoint(value: unknown): JsonValue;
   parseOutput(value: unknown): JsonValue;
   initial(input: JsonValue): JsonValue;
+  /** Agent registrations required at submission, including deduplicated submissions. */
+  agentDependencies?(input: JsonValue, checkpoint: JsonValue): readonly string[];
   run(context: TaskContext<JsonValue, JsonValue>): Promise<TaskTransition<JsonValue, JsonValue>>;
   migrate?: (
     input: JsonValue,
