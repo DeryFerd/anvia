@@ -96,13 +96,13 @@ describe("createLensRedactor", () => {
 
   it("exposes the shared pattern set and Luhn helper", () => {
     expect(DEFAULT_PATTERNS.map((pattern) => pattern.name)).toEqual([
-      "email",
-      "creditCard",
-      "ipv4",
       "googleApiKey",
       "githubToken",
       "awsAccessKeyId",
       "slackToken",
+      "email",
+      "creditCard",
+      "ipv4",
       "phone",
       "jwt",
       "apiKey",

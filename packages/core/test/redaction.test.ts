@@ -180,6 +180,26 @@ describe("createRedactor", () => {
     });
   });
 
+  it.each(["-", "_", "A"])("redacts complete Google keys ending in %s", (ending) => {
+    const key = `AIza${"A".repeat(34)}${ending}`;
+    const redactor = createRedactor();
+
+    expect(redactor.redactString(key)).toBe("<redacted>");
+    expect(redactor.redactString(`key="${key}"`)).toBe('key="<redacted>"');
+    expect(redactor.redactString(`${key}A`)).toBe(`${key}A`);
+    expect(redactor.redactString(`${key}-`)).toBe(`${key}-`);
+  });
+
+  it.each([
+    "xoxb-4111111111111111-abcdefghijkl",
+    "xoxb-1.2.3.4-abcdefghijkl",
+    "ghs_abcdefghijklmnopqrst.1.2.3.4.signature",
+  ])("redacts credentials before overlapping PII patterns: %s", (credential) => {
+    expect(createRedactor().redactString(`credential="${credential}"`)).toBe(
+      'credential="<redacted>"',
+    );
+  });
+
   it("uses the configured replacement and lets custom patterns replace the defaults", () => {
     const custom = createRedactor({
       patterns: [{ name: "ssn", regex: /\b\d{3}-\d{2}-\d{4}\b/g }],
