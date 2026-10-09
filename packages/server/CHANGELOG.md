@@ -1,5 +1,20 @@
 # @anvia/server
 
+## 1.2.3
+
+### Patch Changes
+
+- 0f2a6a6: Add opt-in conversation compaction on durable agent registrations. Summarize completed history
+  while retaining recent complete turns and preserving canonical messages. Persist summary
+  checkpoints, projected input, usage, and progress atomically for recovery, with bounded summary
+  attempts using the model retry policy.
+
+  SQLite schemas 1–4 upgrade to schema 5 when acquired. Use matching durable runtime and protocol
+  consumers; older engines reject the upgraded database. Compaction runs between session runs,
+  not inside active tool loops or graph tasks.
+
+  Allow the durable 0.4 minor line in client and server peer compatibility ranges.
+
 ## 1.2.2
 
 ### Patch Changes
