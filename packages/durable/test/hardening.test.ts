@@ -177,7 +177,11 @@ it("backs up and restores task waits, identities, cursors, and committed effects
   `,
     restored,
   ]);
-  expect(crashed.signal).toBe("SIGKILL");
+  // Windows force-terminates the self-killed child instead of delivering POSIX signals,
+  // so spawnSync reports exit code 1 with a null signal rather than SIGKILL.
+  expect([crashed.signal, crashed.status]).toEqual(
+    process.platform === "win32" ? [null, 1] : ["SIGKILL", null],
+  );
   const staleWal = readFileSync(restored + "-wal");
   expect(staleWal.length).toBeGreaterThan(32);
   rmSync(restored);
