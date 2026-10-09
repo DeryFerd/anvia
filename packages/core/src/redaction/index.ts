@@ -47,6 +47,27 @@ export type Redactor = {
  * identifiers such as order numbers survive redaction.
  */
 export const DEFAULT_PATTERNS: RedactionPattern[] = [
+  // Well-known provider token shapes without a sk-/token- prefix: fixed prefixes plus minimum
+  // lengths keep these precise enough for the precision-first default set. They run before PII
+  // patterns so card, IP, or phone matches cannot partially consume a credential. GitHub's
+  // stateless installation tokens (`ghs_APPID_JWT`) are base64url JWTs with underscores, dots,
+  // hyphens, and a variable length: that branch stops at its character-class boundary instead
+  // of a word boundary, so terminators like `-` or `_` cannot truncate the match. The legacy
+  // fixed-length families stay pinned to 36 characters with a word boundary.
+  { name: "googleApiKey", regex: /\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g },
+  {
+    name: "githubToken",
+    regex:
+      /\b(?:gh[pour]_[A-Za-z0-9]{36}\b|ghs_[A-Za-z0-9_.-]{20,}|github_pat_[A-Za-z0-9_]{20,}\b)/g,
+  },
+  { name: "awsAccessKeyId", regex: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  // Slack's documented families: bot/user tokens (xoxb/xoxa/xoxp/xoxs/xoxr), rotating access
+  // tokens (xoxe-, xoxe.xapp-, xoxe.xoxb-, xoxe.xoxp-), workflow (xwfp), and app-level (xapp).
+  {
+    name: "slackToken",
+    regex:
+      /\b(?:xox[baprsxe](?:\.x(?:app|oxb|oxp))?-[A-Za-z0-9.-]{10,}|xwfp-[A-Za-z0-9.-]{10,}|xapp-[A-Za-z0-9.-]{10,})\b/g,
+  },
   { name: "email", regex: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi },
   // The final digit is separate so a trailing separator is not part of the match.
   { name: "creditCard", regex: /\b(?:\d[ -]?){12,18}\d\b/g, validate: isCardNumber, numeric: true },

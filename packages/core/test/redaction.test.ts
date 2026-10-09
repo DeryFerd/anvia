@@ -116,6 +116,90 @@ describe("createRedactor", () => {
     });
   });
 
+  it("redacts well-known provider credentials that lack an sk- style prefix", () => {
+    const google = `AIza${"A".repeat(35)}`;
+    const github = `ghp_${"A".repeat(36)}`;
+    const githubInstallation = `ghs_${"A".repeat(9)}_${"B".repeat(20)}.eyJhbGciOiJIUzI1NiJ9`;
+    const githubInstallationJwt = "ghs_1234567890.eyJhbGciOiJIUzI1NiJ9.abc-def_ghi";
+    const githubInstallationEndsHyphen = "ghs_abcdefghijklmnopqrstu-vwxyz-";
+    const githubInstallationEndsUnderscore = `ghs_${"A".repeat(20)}_`;
+    const githubFineGrained = `github_pat_${"A".repeat(22)}`;
+    const aws = `AKIA${"A".repeat(16)}`;
+    const slackBot = "xoxb-1234567890-abcdefghijkl";
+    const slackWorkflow = "xwfp-1234567890-abcdefghijkl";
+    const slackApp = "xapp-1234567890-abcdefghijkl";
+    const slackRotating = "xoxe.xapp-1234567890-abcdefghijkl";
+    const slackRotatingBot = "xoxe.xoxb-1234567890-abcdefghijkl";
+    const slackRotatingUser = "xoxe.xoxp-1234567890-abcdefghijkl";
+    const slackRefresh = "xoxe-1234567890-abcdefghijkl";
+    const shortGoogle = `AIza${"A".repeat(34)}`;
+    const awsLowercase = `akia${"A".repeat(16)}`;
+    const shortGithub = `ghp_${"A".repeat(19)}`;
+
+    expect(
+      createRedactor().redact({
+        google,
+        github,
+        githubInstallation,
+        githubInstallationJwt,
+        githubInstallationEndsHyphen,
+        githubInstallationEndsUnderscore,
+        githubFineGrained,
+        aws,
+        slackBot,
+        slackWorkflow,
+        slackApp,
+        slackRotating,
+        slackRotatingBot,
+        slackRotatingUser,
+        slackRefresh,
+        shortGoogle,
+        awsLowercase,
+        shortGithub,
+      }),
+    ).toEqual({
+      google: "<redacted>",
+      github: "<redacted>",
+      githubInstallation: "<redacted>",
+      githubInstallationJwt: "<redacted>",
+      githubInstallationEndsHyphen: "<redacted>",
+      githubInstallationEndsUnderscore: "<redacted>",
+      githubFineGrained: "<redacted>",
+      aws: "<redacted>",
+      slackBot: "<redacted>",
+      slackWorkflow: "<redacted>",
+      slackApp: "<redacted>",
+      slackRotating: "<redacted>",
+      slackRotatingBot: "<redacted>",
+      slackRotatingUser: "<redacted>",
+      slackRefresh: "<redacted>",
+      // Precision guards: near-misses with the wrong length or case must survive.
+      shortGoogle,
+      awsLowercase,
+      shortGithub,
+    });
+  });
+
+  it.each(["-", "_", "A"])("redacts complete Google keys ending in %s", (ending) => {
+    const key = `AIza${"A".repeat(34)}${ending}`;
+    const redactor = createRedactor();
+
+    expect(redactor.redactString(key)).toBe("<redacted>");
+    expect(redactor.redactString(`key="${key}"`)).toBe('key="<redacted>"');
+    expect(redactor.redactString(`${key}A`)).toBe(`${key}A`);
+    expect(redactor.redactString(`${key}-`)).toBe(`${key}-`);
+  });
+
+  it.each([
+    "xoxb-4111111111111111-abcdefghijkl",
+    "xoxb-1.2.3.4-abcdefghijkl",
+    "ghs_abcdefghijklmnopqrst.1.2.3.4.signature",
+  ])("redacts credentials before overlapping PII patterns: %s", (credential) => {
+    expect(createRedactor().redactString(`credential="${credential}"`)).toBe(
+      'credential="<redacted>"',
+    );
+  });
+
   it("uses the configured replacement and lets custom patterns replace the defaults", () => {
     const custom = createRedactor({
       patterns: [{ name: "ssn", regex: /\b\d{3}-\d{2}-\d{4}\b/g }],

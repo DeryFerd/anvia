@@ -48,7 +48,7 @@ Opt in to additional payloads only when they belong in your application's logs.
 - Agent run, generation, tool, and retry events through `createLoggerObserver`.
 - Child loggers that inherit context and support `flush()`.
 - JSON file output with directory creation, append mode, and synchronous or buffered writes.
-- Structured error serialization with bounded cause traversal.
+- Structured error serialization with bounded cause traversal and opt-in error stacks.
 
 Pass `filePath: "logs/app.log"` to `createPinoLogger` for file output. File writes are synchronous
 by default; when using `sync: false`, await `flush()` before shutdown. Flush guarantees depend on

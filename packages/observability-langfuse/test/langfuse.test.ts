@@ -4026,6 +4026,10 @@ describe("PII redaction", () => {
     const { createPiiRedactor } = await import("../src/redaction");
     const r = createPiiRedactor();
     expect(r.patternNames()).toEqual([
+      "googleApiKey",
+      "githubToken",
+      "awsAccessKeyId",
+      "slackToken",
       "email",
       "creditCard",
       "ipv4",
