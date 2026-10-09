@@ -1,3 +1,4 @@
+import type { PreparedLoopContext, LoopContextCheckpoint } from "./loop-context";
 import type { Agent } from "../../agent/agent";
 import {
   AgentRunCancelledError,
@@ -209,6 +210,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
   private readonly onSteeringApplied: InternalAgentRunOptions["onSteeringApplied"];
   private readonly onInternalMemoryCompaction: InternalAgentRunOptions["onMemoryCompaction"];
   private memoryCompaction: MemoryCompactionInfo | undefined;
+  private loopContextCheckpoint: LoopContextCheckpoint | undefined;
   private readonly requestedRunId: string | undefined;
   private readonly continuationState: AgentContinuationState | undefined;
   private readonly interactionResponse: AgentInteractionResponse | undefined;
@@ -269,6 +271,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
     this.memoryScope = options.memoryScope;
     this.memoryRecorder = new AgentRunMemory(agent, options.memoryScope, initialHistory);
     this.continuationState = options.continuationState;
+    this.loopContextCheckpoint = options.continuationState?.loopContextCheckpoint;
     this.interactionResponse = options.interactionResponse;
     if (options.continuationState !== undefined) {
       this.steeringMessages.push(
@@ -470,7 +473,18 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
         await this.runTurnStartHook(currentTurns, prompt, historyForRequest, newMessages);
         await this.runCompletionCallHook(prompt, historyForRequest, newMessages);
 
-        const request = await this.createTurnRequest(prompt, historyForRequest, currentTurns);
+        const prepared =
+          this.execution?.prepareMessages !== undefined ||
+          this.agent.memory?.compaction !== undefined
+            ? await this.prepareTurnMessages(currentTurns, [...historyForRequest, prompt])
+            : { messages: [...historyForRequest, prompt] };
+        if (prepared.compaction !== undefined) {
+          usage = Usage.add(usage, prepared.compaction.usage);
+          this.memoryCompaction = prepared.compaction;
+          await this.notifyInternalMemoryCompaction(prepared.compaction);
+          await this.recordMemoryCompaction(prepared, runObservers);
+        }
+        const request = await this.createTurnRequest(prompt, prepared.messages, currentTurns);
 
         let response: CompletionResponse;
         try {
@@ -795,7 +809,19 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
         await this.runTurnStartHook(currentTurns, prompt, historyForRequest, newMessages);
         await this.runCompletionCallHook(prompt, historyForRequest, newMessages);
 
-        const request = await this.createTurnRequest(prompt, historyForRequest, currentTurns);
+        const prepared =
+          this.execution?.prepareMessages !== undefined ||
+          this.agent.memory?.compaction !== undefined
+            ? await this.prepareTurnMessages(currentTurns, [...historyForRequest, prompt])
+            : { messages: [...historyForRequest, prompt] };
+        if (prepared.compaction !== undefined) {
+          usage = Usage.add(usage, prepared.compaction.usage);
+          this.memoryCompaction = prepared.compaction;
+          await this.notifyInternalMemoryCompaction(prepared.compaction);
+          await this.recordMemoryCompaction(prepared, runObservers);
+          yield { type: "memory_compaction", ...prepared.compaction };
+        }
+        const request = await this.createTurnRequest(prompt, prepared.messages, currentTurns);
 
         assertCompletionRequestSupported(this.agent.model, request, { streaming: true });
         const providerRequest = this.providerTraceRequest(request, { stream: true });
@@ -1146,16 +1172,40 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
     }
   }
 
+  private async prepareTurnMessages(
+    turn: number,
+    messages: MessageType[],
+  ): Promise<PreparedLoopContext> {
+    let prepared: PreparedLoopContext;
+    if (this.execution?.prepareMessages !== undefined) {
+      prepared = await this.execution.prepareMessages(turn, messages, this.loopContextCheckpoint);
+    } else if (
+      turn > 1 ||
+      this.continuationState !== undefined ||
+      messages.some((message) => message.role === "tool")
+    ) {
+      prepared = await this.memoryRecorder.prepareLoop(
+        messages,
+        this.loopContextCheckpoint,
+        this.abortController.signal,
+      );
+    } else {
+      prepared = { messages };
+    }
+    if (prepared.checkpoint !== undefined) this.loopContextCheckpoint = prepared.checkpoint;
+    return prepared;
+  }
+
   private async createTurnRequest(
     prompt: MessageType,
-    history: MessageType[],
+    messages: readonly MessageType[],
     turn: number,
   ): Promise<CompletionRequest> {
     const ragText = extractRagText(prompt);
     const abortSignal = this.abortController.signal;
     const documents = await fetchContextDocuments(this.agent, ragText, abortSignal);
     const toolDefinitions = await fetchToolDefinitions(this.agent, ragText, abortSignal);
-    const request = createCompletionRequest(providerMessages([...history, prompt]), {
+    const request = createCompletionRequest(providerMessages(messages), {
       instructions: this.agent.instructions,
       documents,
       tools: [...toolDefinitions, ...getAgentToolState(this.agent).providerTools],
@@ -1402,6 +1452,8 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
       })),
     };
     if (this.memoryScope !== undefined) continuationState.memoryScope = this.memoryScope;
+    if (this.loopContextCheckpoint !== undefined)
+      continuationState.loopContextCheckpoint = this.loopContextCheckpoint;
     const continuation = parseAgentContinuation({
       version: 1,
       agentId: this.agent.id,
@@ -1993,7 +2045,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
   }
 
   private async recordMemoryCompaction(
-    preparation: MemoryPreparation,
+    preparation: Pick<MemoryPreparation, "compaction">,
     runObservers: ActiveAgentRunObservers,
   ): Promise<void> {
     const compaction = preparation.compaction;

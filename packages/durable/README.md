@@ -160,8 +160,8 @@ exposed before schema validation, and the saved result arrives in `model_complet
 
 Persisting each exposed delta adds SQLite writes and retained event data. The payload limit
 applies to each delta; configure model output limits and database retention in the host application.
-SQLite schema 5 includes streaming and compaction records; schemas 1–4 upgrade on acquisition.
-Older engines reject schema 5. Use the matching core release with execution protocol version 2.
+SQLite schema 6 includes persisted per-model-call context projections; schemas 1–5 upgrade on acquisition.
+Older engines reject schema 6. Upgrade core and durable together: this runtime requires execution protocol version 3.
 
 ## Conversation compaction
 
@@ -178,7 +178,7 @@ const runtime = await DurableRuntime.open({
       version: "researcher-with-compaction-v1",
       compaction: {
         trigger: { afterTokens: 32_000 },
-        retention: { recentTurns: 3 },
+        retention: { recentTurns: 3, recentToolTurns: 0 },
         compactor: createSummaryMemoryCompactor({
           model: researcher.model,
           maxTokens: 2_000,
@@ -201,13 +201,20 @@ The default counter is core's approximate `estimateMemoryTokens`. Supply `tokenC
 model-specific count; it must be deterministic, return a nonnegative safe integer, and honor the
 same semantics after restart. The threshold covers history and the incoming prompt, not agent
 instructions, tool schemas, or output reservations. Budget for those separately. Compaction runs
-only before the initial model call of a submission, not within its tool loop or approval
-continuations. It does not guarantee that a large incoming prompt, retained turn, or subsequent
-tool result fits the model window. There is no manual-compaction API in this release.
+before model calls inside tool loops as well as at submission boundaries. Live compaction retains
+`retention.recentToolTurns` completed tool rounds (default one); use zero to allow summarizing the
+latest large result. All results for parallel calls stay with their assistant call message, and
+the active user request stays verbatim. A long prior run and newly approved tool results are checked
+before the first call too. Explicitly retained rounds, large user prompts, and oversized summaries
+can still exceed the model window. There is no automatic retry of arbitrary context-limit errors
+and no manual-compaction API.
 
 `run.history` and `outcome.messages` retain canonical messages. `run.contextCheckpoint` contains
 only the latest summary and the number of canonical history messages it covers; `run.input`
-contains the model-facing projection. Compaction never deletes or rewrites canonical history,
+contains the initial model-facing projection. Per-call projections are saved as `context` operations,
+keyed by epoch and model turn; their checkpoints index that epoch's unchanged source transcript.
+The next session derives its projection from canonical history and the between-run checkpoint.
+Compaction never deletes or rewrites canonical history,
 and does not reduce journal storage requirements or bypass payload limits. Omitting compaction
 on a future registration sends the full canonical history again.
 
@@ -215,15 +222,27 @@ The serializable policy is captured at submission. Restore the same compactor an
 implementation after restart, and bump `registration.version` when either changes. A queued run
 selects its predecessor's checkpoint when it starts. The summary, prepared input, successful
 summary usage, and `compaction_completed` event commit atomically. Even a skipped preparation is
-persisted, so retries cannot change the model input. Approved continuations reuse their saved
-context. Failed or cancelled runs do not advance the next run's conversation checkpoint.
+persisted before the next main-model request. Approved continuations reuse their saved
+context, then check newly completed tool output. Live preparation decisions (including skips),
+successful summary usage, and completion events commit atomically before the prepared messages can
+reach the main model. Recovery replays a **completed** context operation's exact saved projection and
+usage without calling the counter or summarizer again and without repeating committed tools. A
+**started** context operation records intent and its attempt count, not a committed projection;
+recovery recomputes that unfinished preparation using the saved policy and deterministic counter.
+The summarizer can return different text or usage on this retry. Neither the unfinished projection
+nor its usage has been committed or exposed to the main model. New submissions
+capture live compaction support; runs created by schema-5 engines retain their old request sequence
+when recovered. Failed or cancelled runs do not advance the next run's conversation checkpoint.
 
 `compaction_started` and `compaction_completed` are persisted progress events. Completion includes
 core's `MemoryCompactionInfo` token/message counts and usage; counts describe the projection,
 while the checkpoint's count refers to canonical messages. Successful summary usage is added once
 to the run total, without consuming its main-model turn budget. An interrupted, uncommitted
-summary may be requested again and incur another provider charge; its unknown usage cannot be
-reconstructed. Compactors must be safe to repeat and honor `abortSignal`.
+summary may be requested again and incur another provider charge, including when the provider
+returned just before a crash but the projection transaction did not commit. The run total includes
+only committed summary usage; it is not an exact provider-billing ledger across crashes. Lost usage
+cannot be reconstructed. Compactors must be safe to repeat and honor `abortSignal`; their output
+need not be deterministic. The replay guarantee begins at the atomic context-operation commit.
 
 `modelRetry`, when configured, also bounds summarizer calls and invalid summary results with
 persisted attempts/backoff. Counter, quota, and journal errors are not provider retries. An
