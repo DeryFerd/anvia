@@ -2111,6 +2111,7 @@ export class AgentRun<Output = string, M extends CompletionModel = CompletionMod
       {
         primaryTrace: observability?.primaryTrace,
         errorPolicy: observability?.errorPolicy ?? "ignore",
+        onObserverError: observability?.onObserverError,
       },
     );
   }
