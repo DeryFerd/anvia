@@ -3,6 +3,7 @@ import { Agent } from "@anvia/core/agent";
 import {
   DurableRuntime,
   defineGoal,
+  goalControlSignal,
   type GoalDefinition,
   type GoalDecision,
   type GoalCheckpoint,
@@ -10,6 +11,8 @@ import {
   type DurableTaskHandle,
 } from "../src/index.js";
 import { SqliteDurableStore } from "../src/sqlite.js";
+import { DurableRecoveryError } from "../src/errors.js";
+import { journaledDecision } from "../src/goals/definition.js";
 import { done, lookup, makeAgent, makeStreamingAgent, toolResponse } from "./helpers.js";
 
 const runtimes: DurableRuntime[] = [];
@@ -354,4 +357,144 @@ it("retains partial tool messages when a streaming session exhausts its allowanc
   });
   expect(await handle.result()).toMatchObject({ sessions: 1, modelTurns: 1 });
   expect(tool).toHaveBeenCalledTimes(1);
+});
+
+it("pauses on request after the current session, and applies edits and messages to later ones", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const prompts: string[] = [];
+  const assessed: { objective: string; acceptanceCriteria: string[] }[] = [];
+  let complete = false;
+  const goal = defineGoal({
+    name: "controlled",
+    version: 1,
+    agentId: "researcher",
+    assess: async ({ objective, acceptanceCriteria }) => {
+      assessed.push({ objective, acceptanceCriteria });
+      return decision(complete ? "complete" : "continue", `progress-${assessed.length}`);
+    },
+  });
+  const runtime = await open(
+    goal,
+    makeAgent(async (request) => {
+      const prompt = request.chatHistory.find((message) => message.role === "user");
+      prompts.push(typeof prompt?.content === "string" ? prompt.content : "");
+      if (prompts.length === 1) await gate;
+      return done();
+    }),
+  );
+  const handle = await runtime.submitGoal(goal, input);
+  await expect.poll(() => prompts.length).toBe(1);
+  const task = (await handle.snapshot()).task;
+  // While a session runs, controls are stored for later; names never collide.
+  expect(goalControlSignal(task, "pause")).toBe("pause:0");
+  await handle.signal("pause:0", "pause-1", {});
+  await handle.signal("edit:0", "edit-1", { objective: "Build fast search" });
+  await handle.signal("edit:1", "edit-bad", {});
+  await handle.signal("message:0", "message-1", { text: "Use the new index." });
+  expect(goalControlSignal((await handle.snapshot()).task, "edit")).toBe("edit:2");
+  release();
+  // The running session finished and was assessed against the original goal.
+  const stopped = await paused(handle, "requested");
+  expect(stopped.checkpoint).toMatchObject({
+    sessions: 1,
+    objective: "Build fast search",
+    messages: ["Use the new index."],
+    controls: { pause: 1, edit: 2, message: 1 },
+  });
+  expect(assessed).toEqual([
+    { objective: "Build search", acceptanceCriteria: ["Search tests pass"] },
+  ]);
+  expect(prompts).toHaveLength(1);
+  // A later edit while paused also applies on resume.
+  await handle.signal("edit:2", "edit-2", { acceptanceCriteria: ["Search p95 under 50ms"] });
+  complete = true;
+  await handle.signal("resume:0", "resume", { feedback: "Continue." });
+  expect(await handle.result()).toMatchObject({ sessions: 2 });
+  const second = JSON.parse(prompts[1]!.split("\n").at(-1)!);
+  expect(prompts[1]).toContain("Follow the user's `messages`");
+  expect(second).toMatchObject({
+    objective: "Build fast search",
+    acceptanceCriteria: ["Search p95 under 50ms"],
+    feedback: "Continue.",
+    messages: ["Use the new index."],
+  });
+  expect(assessed[1]).toEqual({
+    objective: "Build fast search",
+    acceptanceCriteria: ["Search p95 under 50ms"],
+  });
+});
+
+it("delivers messages sent between sessions to exactly one session", async () => {
+  const prompts: string[] = [];
+  let sessions = 0;
+  let handle!: DurableTaskHandle<GoalResult>;
+  const goal = defineGoal({
+    name: "messages",
+    version: 1,
+    agentId: "researcher",
+    assess: async () => {
+      sessions++;
+      // Deliver while the goal is between sessions, before the next one is admitted.
+      if (sessions === 1)
+        await handle.signal("message:0", "message", { text: "Prefer the cached data." });
+      return decision(sessions === 3 ? "complete" : "continue", `progress-${sessions}`);
+    },
+  });
+  const runtime = await open(
+    goal,
+    makeAgent(async (request) => {
+      const prompt = request.chatHistory.find((message) => message.role === "user");
+      prompts.push(typeof prompt?.content === "string" ? prompt.content : "");
+      return done();
+    }),
+  );
+  handle = await runtime.submitGoal(goal, input);
+  expect(await handle.result()).toMatchObject({ sessions: 3 });
+  const payloads = prompts.map((prompt) => JSON.parse(prompt.split("\n").at(-1)!));
+  expect(payloads.map((payload) => payload.messages)).toEqual([
+    undefined,
+    ["Prefer the cached data."],
+    undefined,
+  ]);
+});
+
+it("passes an assessment's context to the next session inside previous", async () => {
+  const prompts: string[] = [];
+  let sessions = 0;
+  const goal = defineGoal({
+    name: "context",
+    version: 1,
+    agentId: "researcher",
+    assess: async () => {
+      sessions++;
+      return {
+        ...decision(sessions === 2 ? "complete" : "continue", `progress-${sessions}`),
+        context: "Previous answer: index built.\nChanged files: src/index.ts",
+      };
+    },
+  });
+  const runtime = await open(
+    goal,
+    makeAgent(async (request) => {
+      const prompt = request.chatHistory.find((message) => message.role === "user");
+      prompts.push(typeof prompt?.content === "string" ? prompt.content : "");
+      return done();
+    }),
+  );
+  const handle = await runtime.submitGoal(goal, input);
+  expect(await handle.result()).toMatchObject({
+    sessions: 2,
+    handoff: { context: "Previous answer: index built.\nChanged files: src/index.ts" },
+  });
+  const second = JSON.parse(prompts[1]!.split("\n").at(-1)!);
+  expect(second.previous.context).toBe(
+    "Previous answer: index built.\nChanged files: src/index.ts",
+  );
+});
+
+it("treats a journaled decision that does not validate as recoverable", () => {
+  const valid = { ...decision("continue"), context: "Earlier answer" };
+  expect(journaledDecision(valid)).toEqual(valid);
+  expect(() => journaledDecision({ status: "done" })).toThrow(DurableRecoveryError);
 });
