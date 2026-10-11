@@ -672,7 +672,9 @@ const agent = new Agent({
 Reports cover startup (`startRun`, `startGeneration`, `startTool`) and terminal phases. Each report
 carries the phase, the observer name, and the original error. The default handler writes one line per
 failure to `console.error`; pass a no-op to keep ignored failures silent, or route them into your
-logger as above. An error thrown by the handler is ignored, so a faulty sink cannot fail the run.
+logger as above. Handlers may return a promise, but agent execution does not wait for it. Synchronous
+throws and promise rejections are ignored, so a faulty sink cannot fail the run or produce an
+unhandled rejection.
 
 Pipelines accept the same `errorPolicy` values, but this reporting is agent-only; pipeline observer
 dispatch keeps its existing behavior.

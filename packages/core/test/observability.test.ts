@@ -13,6 +13,7 @@ import {
   type AgentGenerationErrorArgs,
   type AgentGenerationStartArgs,
   type AgentObserver,
+  type AgentObserverFailureReport,
   type AgentRunEndArgs,
   type AgentRunErrorArgs,
   type AgentRunEventArgs,
@@ -1564,6 +1565,49 @@ describe("active agent observer groups", () => {
     await expect(active.end(runEndArgs())).resolves.toBeUndefined();
     expect(onObserverError).toHaveBeenCalledWith({ phase: "end", observer: "broken", error });
   });
+
+  it.each(["startRun", "end"])(
+    "handles async sink rejections during %s without an unhandled rejection",
+    async (phase) => {
+      const error = new Error("observer failed");
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      const reports: AgentObserverFailureReport[] = [];
+      const onObserverError = async (report: AgentObserverFailureReport) => {
+        reports.push(report);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        throw new Error("async sink exploded");
+      };
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const active = await startAgentRunObservers(
+          {
+            broken: {
+              startRun: () => {
+                if (phase === "startRun") throw error;
+                return createRunObserver({
+                  end: () => {
+                    throw error;
+                  },
+                });
+              },
+            },
+          },
+          runStartArgs(),
+          { errorPolicy: "ignore", onObserverError },
+        );
+
+        await expect(active.end(runEndArgs())).resolves.toBeUndefined();
+        expect(reports).toEqual([{ phase, observer: "broken", error }]);
+        // Let the async sink reject and Node dispatch any unhandled rejection.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+        expect(vi.mocked(console.error)).not.toHaveBeenCalled();
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    },
+  );
 
   it("throws nested observer failures in strict mode without logging", async () => {
     const error = new Error("strict failed");

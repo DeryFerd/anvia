@@ -196,10 +196,13 @@ export type AgentObserverFailureReport = {
 /**
  * Sink for observer failures swallowed by the active error policy. The default
  * writes one line per failure to `console.error`; pass a no-op to silence ignored
- * failures, or forward the reports to an application logger. An error thrown by the
- * handler is ignored so a faulty sink cannot fail the run.
+ * failures, or forward the reports to an application logger. Handler promises are
+ * not awaited. Synchronous throws and promise rejections are ignored so a faulty
+ * sink cannot fail the run or produce an unhandled rejection.
  */
-export type AgentObserverErrorHandler = (failure: AgentObserverFailureReport) => void;
+export type AgentObserverErrorHandler = (
+  failure: AgentObserverFailureReport,
+) => void | Promise<void>;
 
 export type AgentObservabilityOptions<Observers extends AgentObserverMap = AgentObserverMap> = {
   readonly observers: Observers;
