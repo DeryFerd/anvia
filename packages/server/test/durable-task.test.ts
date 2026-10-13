@@ -274,3 +274,54 @@ it("applies owned-task authorization to run listing rows", async () => {
     }),
   );
 });
+
+it("sets trace context on the server and rejects client-supplied trace", async () => {
+  const runtime = await DurableRuntime.open({
+    store: new SqliteDurableStore(":memory:"),
+    tasks: [waiting],
+    agents: [{ agent: makeAgent(async () => done()), version: "1" }],
+  });
+  runtimes.push(runtime);
+  const trace = vi.fn(async (_request: Request, resource: DurableAuthorization) => ({
+    userId: "authenticated-user",
+    tags: [resource.taskName ?? resource.agentId ?? "run"],
+  }));
+  const handler = createDurableHandler({ runtime, authorize: () => true, trace });
+  const post = (path: string, body: unknown) =>
+    handler(
+      new Request(`https://test/durable${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  const run = { agentId: "researcher", sessionId: "s", requestId: "r", prompt: "hi" };
+  const task = { name: "wait", version: 1, sessionId: "s", requestId: "t", input: null };
+  const spoofed = { userId: "someone-else" };
+
+  for (const [path, body] of [
+    ["/runs", run],
+    ["/tasks", task],
+  ] as const) {
+    const rejected = await post(path, { ...body, trace: spoofed });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: "Trace context is set by the server, not the client.",
+    });
+  }
+  expect(trace).not.toHaveBeenCalled();
+  expect(await runtime.listRuns()).toMatchObject({ runs: [] });
+
+  const accepted = await post("/runs", run);
+  expect(accepted.status).toBe(202);
+  const { run: saved } = await accepted.json();
+  expect(saved.trace).toEqual({ userId: "authenticated-user", tags: ["researcher"] });
+  const submitted = await post("/tasks", task);
+  expect(submitted.status).toBe(202);
+  const { task: savedTask } = await submitted.json();
+  expect(savedTask.trace).toEqual({ userId: "authenticated-user", tags: ["wait"] });
+  expect(trace).toHaveBeenCalledWith(
+    expect.any(Request),
+    expect.objectContaining({ action: "submit", sessionId: "s", taskName: "wait" }),
+  );
+});
