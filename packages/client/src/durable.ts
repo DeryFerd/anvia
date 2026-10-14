@@ -223,17 +223,17 @@ export class DurableClient {
     submission: Omit<DurableSubmission, "trace">,
     options: DurableSubmitOptions & DurableRequestOptions = {},
   ): Promise<DurableSnapshot> {
-    return parseDurableSnapshot(
-      await (
-        await this.request(
-          "/runs",
-          "POST",
-          { ...submission, ...(options.enqueue === undefined ? {} : { enqueue: options.enqueue }) },
-          options,
-        )
-      ).json(),
-    );
+    const body: Omit<DurableSubmission, "trace"> & DurableSubmitOptions = { ...submission };
+
+    if (options.enqueue !== undefined) {
+      body.enqueue = options.enqueue;
+    }
+
+    const response = await this.request("/runs", "POST", body, options);
+
+    return parseDurableSnapshot(await response.json());
   }
+
   async listRuns(
     filter: DurableListOptions & { sessionId: string },
     options: DurableRequestOptions = {},
@@ -283,17 +283,18 @@ export class DurableClient {
     input: AgentSteerInput,
     options: DurableSteerOptions & DurableRequestOptions = {},
   ): Promise<AgentSteerReceipt> {
-    return parseDurableSteerReceipt(
-      await (
-        await this.request(
-          `${this.path(runId)}/steer`,
-          "POST",
-          { input, ...(options.requestId === undefined ? {} : { requestId: options.requestId }) },
-          options,
-        )
-      ).json(),
-    );
+    const path = `${this.path(runId)}/steer`;
+    const body: { input: AgentSteerInput; requestId?: string } = { input };
+
+    if (options.requestId !== undefined) {
+      body.requestId = options.requestId;
+    }
+
+    const response = await this.request(path, "POST", body, options);
+
+    return parseDurableSteerReceipt(await response.json());
   }
+
   async respond(
     runId: string,
     interactionId: string,
@@ -344,13 +345,27 @@ export class DurableClient {
         : this.options.headers;
     const headers = new Headers(supplied);
     if (body !== undefined) headers.set("content-type", "application/json");
-    const response = await (this.options.fetch ?? globalThis.fetch)(`${this.endpoint}${path}`, {
+
+    const fetch = this.options.fetch ?? globalThis.fetch;
+    const url = `${this.endpoint}${path}`;
+    const init: RequestInit = {
       method,
       headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
-      ...(this.options.credentials === undefined ? {} : { credentials: this.options.credentials }),
-    });
+    };
+
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+
+    if (options.abortSignal !== undefined) {
+      init.signal = options.abortSignal;
+    }
+
+    if (this.options.credentials !== undefined) {
+      init.credentials = this.options.credentials;
+    }
+
+    const response = await fetch(url, init);
     if (!response.ok) {
       await response.body?.cancel();
       throw new DurableHttpError(response.status);

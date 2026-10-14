@@ -40,6 +40,9 @@ jobs:
       - name: Check formatting and linting
         run: pnpm check
 
+      - name: Test custom lint rules
+        run: node --test scripts/oxlint-anvia.test.mjs
+
       - name: Validate package releases
         run: pnpm releases:validate
 
@@ -56,7 +59,8 @@ jobs:
         run: pnpm releases:verify-packs
 
       - name: Typecheck packages
-        run: pnpm --filter './packages/**' typecheck
+        # Some typecheck scripts rebuild dependencies with --clean; avoid concurrent readers.
+        run: pnpm --workspace-concurrency=1 --filter './packages/**' typecheck
 
       - name: Typecheck cookbook and internal tests
         run: pnpm --filter cookbook --filter './tests/**' typecheck
