@@ -242,7 +242,22 @@ describe("AzureOpenAIClient", () => {
     [{ baseUrl: "file:///tmp/test", apiKey: "key" }, "HTTP(S) URL"],
     [{ baseUrl: `${endpoint}/?api-version=test`, apiKey: "key" }, "HTTP(S) URL"],
     [{ baseUrl: "https://user:password@example.com", apiKey: "key" }, "HTTP(S) URL"],
+    [{ endpoint: "http://example.openai.azure.com", apiKey: "key" }, "HTTPS"],
+    [{ baseUrl: "http://metadata.internal", apiKey: "key" }, "HTTPS"],
   ])("validates managed options %j", (options, message) => {
     expect(() => new AzureOpenAIClient(options as never)).toThrow(message);
+  });
+
+  it("allows plain HTTP only for loopback development endpoints", () => {
+    expect(
+      () => new AzureOpenAIClient({ endpoint: "http://127.0.0.1:10000", apiKey: "key" }),
+    ).not.toThrow();
+    expect(
+      () => new AzureOpenAIClient({ endpoint: "http://localhost:10000", apiKey: "key" }),
+    ).not.toThrow();
+    expect(
+      () => new AzureOpenAIClient({ baseUrl: "http://[::1]:10000/openai/v1/", apiKey: "key" }),
+    ).not.toThrow();
+    expect(() => new AzureOpenAIClient({ endpoint, apiKey: "key" })).not.toThrow();
   });
 });

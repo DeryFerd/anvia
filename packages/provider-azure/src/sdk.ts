@@ -105,6 +105,11 @@ function resolveBaseUrl(options: AzureOpenAIEndpointOptions): string {
       "AzureOpenAIClient requires an HTTP(S) URL without credentials, query, or fragment.",
     );
   }
+  if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) {
+    throw new TypeError(
+      "AzureOpenAIClient requires HTTPS for non-loopback endpoints; plain HTTP is allowed only for loopback development hosts.",
+    );
+  }
   if (options.endpoint !== undefined) {
     if (url.pathname !== "/") {
       throw new TypeError(
@@ -116,4 +121,9 @@ function resolveBaseUrl(options: AzureOpenAIEndpointOptions): string {
     url.pathname = `${url.pathname.replace(/\/+$/, "")}/`;
   }
   return url.toString();
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
