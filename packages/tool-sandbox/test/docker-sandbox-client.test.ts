@@ -186,6 +186,46 @@ describe("DockerSandboxClient ownership", () => {
     ]);
     await sandbox.destroy();
   });
+
+  it("refuses to write through a container symlink before docker cp", async () => {
+    docker.run.mockImplementation(async (args) => {
+      if (args[0] === "container" && args[1] === "inspect") {
+        return dockerResult({ stdout: encodedInspection(true, [], undefined, "symlink-write") });
+      }
+      if (args[0] === "exec" && args.includes("test")) {
+        return dockerResult({ exitCode: 1 });
+      }
+      return dockerResult();
+    });
+    const client = new DockerSandboxClient();
+    const sandbox = await client.resumeSandbox({ id: "symlink-write" });
+
+    await expect(
+      sandbox.runtime.writeTextFile({ path: "host-leak", text: "overwrite" }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    expect(docker.assert.mock.calls.map(([args]) => args[0])).not.toContain("cp");
+    await sandbox.destroy();
+  });
+
+  it("writes regular files after the container reports a writable path", async () => {
+    docker.run.mockImplementation(async (args) => {
+      if (args[0] === "container" && args[1] === "inspect") {
+        return dockerResult({ stdout: encodedInspection(true, [], undefined, "regular-write") });
+      }
+      if (args[0] === "exec" && args.includes("test")) {
+        return dockerResult({ exitCode: 0 });
+      }
+      return dockerResult();
+    });
+    const client = new DockerSandboxClient();
+    const sandbox = await client.resumeSandbox({ id: "regular-write" });
+
+    await expect(
+      sandbox.runtime.writeTextFile({ path: "notes.txt", text: "kept" }),
+    ).resolves.toBeUndefined();
+    expect(docker.assert.mock.calls.map(([args]) => args[0])).toContain("cp");
+    await sandbox.destroy();
+  });
 });
 
 type DockerResult = {
@@ -215,6 +255,7 @@ function encodedInspection(
   running: boolean,
   ports: readonly number[] = [],
   hostPort?: number,
+  id = "resumed",
 ): Uint8Array {
   return new TextEncoder().encode(
     JSON.stringify([
@@ -222,7 +263,7 @@ function encodedInspection(
         Config: {
           Labels: {
             "anvia.sandbox.schema": "1",
-            "anvia.sandbox.id": "resumed",
+            "anvia.sandbox.id": id,
             "anvia.sandbox.workdir": "/workspace",
             "anvia.sandbox.workspace.type": "ephemeral",
             "anvia.sandbox.workspace.volume": "anvia-sandbox-resumed-workspace",

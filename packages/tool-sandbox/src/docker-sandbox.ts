@@ -698,6 +698,7 @@ class DockerSandboxRuntimeImpl {
     this.assertFileSize(data.byteLength, normalized);
     await this.runOperation(abortSignal, async (effectiveSignal) => {
       await this.mkdir(parentSandboxPath(normalized), effectiveSignal);
+      await this.assertWritableSandboxPath(normalized, effectiveSignal);
       const tempDir = await mkdtemp(path.join(os.tmpdir(), "anvia-sandbox-write-"));
       const source = path.join(tempDir, path.basename(normalized));
       try {
@@ -903,6 +904,40 @@ class DockerSandboxRuntimeImpl {
     if (result.status !== "exited" || result.exitCode !== 0) {
       throw new DockerSandboxError(
         "Unable to create sandbox directory.",
+        "docker_command_failed",
+        result,
+      );
+    }
+  }
+
+  /**
+   * Reject writes whose container destination is an existing symlink. `docker cp`
+   * follows such links, so without this check a symlink planted in the workspace
+   * would redirect the write outside it — mirroring the read path's
+   * `assertCopiedRegularFile` guard. `test ! -L <path>` exits 1 only for symlinks;
+   * any other non-zero status means the check itself failed.
+   */
+  private async assertWritableSandboxPath(
+    sandboxPath: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
+    const result = await this.execCommand(
+      {
+        command: "test",
+        args: ["!", "-L", containerPath(this.configuration.workdir, sandboxPath)],
+      },
+      abortSignal,
+    );
+    if (result.status === "exited" && result.exitCode === 1) {
+      throw new DockerSandboxError(
+        `Sandbox path is a symbolic link: ${sandboxPath}`,
+        "invalid_path",
+        result,
+      );
+    }
+    if (result.status !== "exited" || result.exitCode !== 0) {
+      throw new DockerSandboxError(
+        "Unable to inspect the sandbox write target.",
         "docker_command_failed",
         result,
       );

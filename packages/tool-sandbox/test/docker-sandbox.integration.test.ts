@@ -38,6 +38,9 @@ describe.skipIf(!runDockerTests)("Docker sandbox integration", () => {
       await expect(sandbox.runtime.readFile({ path: "host-leak" })).rejects.toMatchObject({
         code: "invalid_path",
       });
+      await expect(
+        sandbox.runtime.writeTextFile({ path: "host-leak", text: "overwrite" }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
 
       await sandbox.runtime.writeTextFile({ path: "state.txt", text: "kept" });
       await sandbox.stop();
