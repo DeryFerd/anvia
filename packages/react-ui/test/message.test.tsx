@@ -58,6 +58,74 @@ describe("Message primitives", () => {
     expect(screen.queryByText("Actions turn_2")).toBeNull();
   });
 
+  it.each(
+    (
+      [
+        [],
+        [
+          {
+            id: "tool",
+            type: "tool",
+            toolName: "shell",
+            toolCallId: "call",
+            state: "output-available",
+            input: {},
+            output: "done",
+          },
+        ],
+      ] as UIMessage["parts"][]
+    ).map((parts) => ({ parts })),
+  )("shows custom actions for a final reply without text", ({ parts }) => {
+    const messages: UIMessage[] = [
+      textMessage("earlier", "assistant", "Working"),
+      { id: "final", role: "assistant", parts },
+    ];
+    const view = (status: "ready" | "streaming", custom: boolean) => (
+      <ChatProvider controller={createChatController({ messages, status })}>
+        <Thread.Root>
+          <Thread.Messages>
+            {(message) => (
+              <Message.Root>
+                <Message.Actions>{custom ? `Metadata ${message.id}` : undefined}</Message.Actions>
+              </Message.Root>
+            )}
+          </Thread.Messages>
+        </Thread.Root>
+      </ChatProvider>
+    );
+    const { rerender } = render(view("ready", true));
+    expect(screen.getByText("Metadata final")).toBeTruthy();
+    expect(screen.queryByText("Metadata earlier")).toBeNull();
+    rerender(view("streaming", true));
+    expect(screen.queryByText("Metadata final")).toBeNull();
+    rerender(view("ready", false));
+    expect(screen.queryByText("Copy")).toBeNull();
+    expect(screen.queryByText("Regenerate")).toBeNull();
+  });
+
+  it.each([false, true])("hides textless action rows with boolean children: %s", (children) => {
+    const messages: UIMessage[] = [{ id: "final", role: "assistant", parts: [] }];
+    const view = (showMeta: boolean) => (
+      <ChatProvider controller={createChatController({ messages })}>
+        <Thread.Root>
+          <Thread.Messages>
+            <Message.Root>
+              <Message.Actions data-testid="actions">
+                {showMeta ? <span>Metadata</span> : children}
+              </Message.Actions>
+            </Message.Root>
+          </Thread.Messages>
+        </Thread.Root>
+      </ChatProvider>
+    );
+    const { rerender } = render(view(false));
+    expect(screen.queryByTestId("actions")).toBeNull();
+    rerender(view(true));
+    expect(screen.getByTestId("actions").textContent).toBe("Metadata");
+    rerender(view(false));
+    expect(screen.queryByTestId("actions")).toBeNull();
+  });
+
   it("renders chat messages and all supported message part kinds", () => {
     const messages: UIMessage[] = [
       {
