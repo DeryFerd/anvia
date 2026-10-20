@@ -2,6 +2,7 @@ import type { ClientStream, ClientStreamEvent, ClientStreamFrame } from "@anvia/
 import { describe, expect, it, vi } from "vitest";
 import * as publicServer from "../src";
 import {
+  InvalidResumableAfterError,
   type ClientResumableEvent,
   createClientStreamResponse,
   createEventStreamResponse,
@@ -10,6 +11,7 @@ import {
   errorEvent,
   resumeClientStreamResponse,
   resumeEventStreamResponse,
+  resumeStreamEvents,
 } from "../src";
 
 function CompileServerBoundary() {
@@ -341,6 +343,100 @@ describe("memory resumable stream store", () => {
     expect(state).toEqual({ status: "running", lastEventId: 0 });
     const record = await store.append({ streamId: "done", event: { kind: "new" } });
     expect(record.eventId).toBe(1);
+  });
+});
+
+describe("resumable after cursor validation", () => {
+  it("treats undefined as 0 for resumable resumes", async () => {
+    const store = createMemoryResumableStreamStore<{ kind: string }>();
+    const initial = createEventStreamResponse({
+      events: values([{ kind: "one" }]),
+      resumable: { id: "after_default", store },
+    });
+    await initial.text();
+
+    const resumed = resumeEventStreamResponse({
+      streamId: "after_default",
+      after: undefined as unknown as number,
+      store,
+    });
+    expect(resumed.status).toBe(200);
+    expect(await jsonl(resumed)).toEqual([
+      { type: "stream_start", streamId: "after_default", eventId: 0 },
+      { type: "stream_event", streamId: "after_default", eventId: 1, event: { kind: "one" } },
+      { type: "stream_end", streamId: "after_default", eventId: 1, status: "completed" },
+    ]);
+  });
+
+  it.each([0, 1])("resumes normally with valid after %s", async (after) => {
+    const store = createMemoryResumableStreamStore<{ kind: string }>();
+    const initial = createEventStreamResponse({
+      events: values([{ kind: "one" }, { kind: "two" }]),
+      resumable: { id: "after_valid", store },
+    });
+    await initial.text();
+
+    const resumed = resumeEventStreamResponse({
+      streamId: "after_valid",
+      after,
+      store,
+    });
+    expect(resumed.status).toBe(200);
+    const frames = await jsonl(resumed);
+    expect(frames[0]).toEqual({ type: "stream_start", streamId: "after_valid", eventId: 0 });
+    expect(frames.at(-1)).toMatchObject({ type: "stream_end" });
+    expect(
+      frames.filter((frame) => (frame as { type: string }).type === "stream_event"),
+    ).toHaveLength(2 - after);
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "returns a 400 error instead of a normal end for invalid after %s",
+    async (after) => {
+      const store = createMemoryResumableStreamStore<{ kind: string }>();
+      const initial = createEventStreamResponse({
+        events: values([{ kind: "one" }]),
+        resumable: { id: "after_invalid", store },
+      });
+      await initial.text();
+
+      const resumed = resumeEventStreamResponse({
+        streamId: "after_invalid",
+        after,
+        store,
+      });
+      expect(resumed.status).toBe(400);
+      expect(await resumed.json()).toEqual({
+        error: {
+          code: "invalid_resumable_after",
+          message: "Resumable stream resume cursor must be a nonnegative safe integer.",
+        },
+      });
+
+      await expect(
+        (async () => {
+          for await (const _record of resumeStreamEvents({
+            id: "after_invalid",
+            after,
+            store,
+          })) {
+            // The generator must throw before yielding anything.
+          }
+        })(),
+      ).rejects.toThrowError(InvalidResumableAfterError);
+    },
+  );
+
+  it("rejects invalid client resume cursors with a 400 error", async () => {
+    const store = createMemoryResumableStreamStore<ClientResumableEvent>();
+    const response = resumeClientStreamResponse({ streamId: "client_after", after: -1, store });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_resumable_after",
+        message: "Resumable stream resume cursor must be a nonnegative safe integer.",
+      },
+    });
   });
 });
 
