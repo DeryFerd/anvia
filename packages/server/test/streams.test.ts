@@ -1,5 +1,5 @@
 import type { ClientStream, ClientStreamEvent, ClientStreamFrame } from "@anvia/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as publicServer from "../src";
 import {
   type ClientResumableEvent,
@@ -213,6 +213,134 @@ describe("client stream responses", () => {
       expect.objectContaining({ type: "stream_start", protocol: "anvia.client.v3" }),
       { type: "stream_end", streamId: "stream_v1", eventId: 1, status: "error" },
     ]);
+  });
+
+  it("leaves a running stream untouched when a second producer reuses its id", async () => {
+    const store = createMemoryResumableStreamStore<ClientResumableEvent>();
+    let releaseFirst: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstEvents: ClientStream = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: "run_start", runId: "run_1", source: "completion" };
+        await gate;
+        yield { type: "run_end", runId: "run_1", status: "completed", text: "Done" };
+      },
+    };
+    const first = createClientStreamResponse({
+      events: firstEvents,
+      resumable: { streamId: "dup_running", store },
+    });
+    const firstDone = jsonl(first);
+
+    // Wait until the first producer's event is persisted so the stream is live.
+    await vi.waitFor(async () => {
+      expect((await store.status({ streamId: "dup_running" })).lastEventId).toBe(1);
+    });
+
+    const second = createClientStreamResponse({
+      events: clientEvents([{ type: "run_end", runId: "run_1", status: "completed" }]),
+      resumable: { streamId: "dup_running", store },
+    });
+    const secondFrames = (await jsonl(second)) as ClientStreamFrame[];
+    expect(secondFrames).toEqual([
+      expect.objectContaining({ type: "stream_start" }),
+      { type: "stream_end", streamId: "dup_running", eventId: 0, status: "error" },
+    ]);
+
+    // The rejected reopen leaves the first stream running with its history intact.
+    expect(await store.status({ streamId: "dup_running" })).toEqual({
+      status: "running",
+      lastEventId: 1,
+    });
+
+    releaseFirst?.();
+    const firstFrames = (await firstDone) as ClientStreamFrame[];
+    expect(firstFrames.map((frame) => frame.type)).toEqual([
+      "stream_start",
+      "stream_event",
+      "stream_event",
+      "stream_end",
+    ]);
+    expect(firstFrames.at(-1)).toEqual({
+      type: "stream_end",
+      streamId: "dup_running",
+      eventId: 2,
+      status: "completed",
+    });
+    expect(firstFrames[1]).toMatchObject({
+      type: "stream_event",
+      eventId: 1,
+      event: { type: "run_start", runId: "run_1" },
+    });
+  });
+});
+
+describe("memory resumable stream store", () => {
+  it("opens a new stream id as running with no history", async () => {
+    const store = createMemoryResumableStreamStore<{ kind: string }>();
+    const state = await store.open({ streamId: "fresh" });
+    expect(state).toEqual({ status: "running", lastEventId: 0 });
+    expect(await store.status({ streamId: "fresh" })).toEqual({
+      status: "running",
+      lastEventId: 0,
+    });
+  });
+
+  it("rejects reopening a running stream and keeps its history and subscribers", async () => {
+    const store = createMemoryResumableStreamStore<{ kind: string }>();
+    await store.open({ streamId: "live" });
+    await store.append({ streamId: "live", event: { kind: "one" } });
+    await store.append({ streamId: "live", event: { kind: "two" } });
+
+    const seen: string[] = [];
+    const iterator = store.subscribe({ streamId: "live", after: 2 })[Symbol.asyncIterator]();
+    const pending = (async () => {
+      const next = await iterator.next();
+      if (next.done !== true) {
+        const event = next.value.event;
+        if ("kind" in event) seen.push(event.kind);
+      }
+    })();
+
+    await expect(store.open({ streamId: "live" })).rejects.toThrow(
+      'Resumable stream "live" is already running',
+    );
+
+    // History survives the rejected reopen.
+    expect(await store.status({ streamId: "live" })).toEqual({
+      status: "running",
+      lastEventId: 2,
+    });
+    const replay = store.subscribe({ streamId: "live" })[Symbol.asyncIterator]();
+    const replayed: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const next = await replay.next();
+      if (next.done === true) break;
+      const event = next.value.event;
+      if ("kind" in event) replayed.push(event.kind);
+    }
+    await replay.return?.();
+    expect(replayed).toEqual(["one", "two"]);
+
+    // The subscriber attached before the rejected reopen still receives new events.
+    await store.append({ streamId: "live", event: { kind: "three" } });
+    await pending;
+    await iterator.return?.();
+    expect(seen).toEqual(["three"]);
+  });
+
+  it("resets a closed stream id to a fresh running stream", async () => {
+    const store = createMemoryResumableStreamStore<{ kind: string }>();
+    await store.open({ streamId: "done" });
+    await store.append({ streamId: "done", event: { kind: "old" } });
+    await store.close({ streamId: "done", status: "completed" });
+
+    const state = await store.open({ streamId: "done" });
+    expect(state).toEqual({ status: "running", lastEventId: 0 });
+    const record = await store.append({ streamId: "done", event: { kind: "new" } });
+    expect(record.eventId).toBe(1);
   });
 });
 
