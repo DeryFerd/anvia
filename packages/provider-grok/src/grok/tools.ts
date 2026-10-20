@@ -1,4 +1,5 @@
 import type { JsonObject, ProviderTool } from "@anvia/core/completion";
+import { isPrivateOrReservedHost } from "./mcp-url-guard.js";
 
 export type GrokWebSearchOptions = {
   allowedDomains?: string[] | undefined;
@@ -120,6 +121,9 @@ export function mcp(options: GrokMcpOptions): GrokProviderTool {
   }
   if (serverUrl.protocol !== "https:") {
     throw new TypeError("Grok MCP serverUrl must use HTTPS.");
+  }
+  if (isPrivateOrReservedHost(serverUrl.hostname)) {
+    throw new TypeError("Grok MCP serverUrl must not target a private or reserved host.");
   }
   const serverLabel = validateNonemptyString(options.serverLabel, "serverLabel");
   const allowedTools = validateStringList(

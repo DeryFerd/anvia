@@ -86,4 +86,28 @@ describe("Grok provider tools", () => {
       tools.mcp({ serverUrl: "http://mcp.example.com", serverLabel: "example" }),
     ).toThrow("must use HTTPS");
   });
+
+  it("rejects MCP server URLs that target private or reserved hosts", () => {
+    const blocked = [
+      "https://127.0.0.1:8443/tools",
+      "https://10.0.0.15/tools",
+      "https://172.16.4.9/tools",
+      "https://192.168.1.10/tools",
+      "https://169.254.169.254/latest/meta-data",
+      "https://127.1/tools",
+      "https://localhost/tools",
+      "https://internal.localhost/tools",
+      "https://[::1]/tools",
+      "https://[fd00::1]/tools",
+    ];
+    for (const serverUrl of blocked) {
+      expect(() => tools.mcp({ serverUrl, serverLabel: "example" })).toThrow(
+        "must not target a private or reserved host",
+      );
+    }
+
+    expect(() =>
+      tools.mcp({ serverUrl: "https://mcp.example.com/tools", serverLabel: "example" }),
+    ).not.toThrow();
+  });
 });
