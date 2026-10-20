@@ -41,6 +41,10 @@ const tools = createDockerSandboxTools({
 
 `await using` destroys the owned container and ephemeral volume at scope exit. Keep the scope open while agents use its tools. Command policies filter executable names; they do not restrict what an allowed interpreter can execute.
 
+File writes reject symlinks in the destination and all parent path components with `invalid_path`,
+checking before directory creation and before copying. These checks require `sh` in the image and
+are separate from the copy; they do not provide atomic protection against concurrent link swaps.
+
 ## Shell command lines
 
 `exec_command` and `start_process` use `/bin/bash -c` for natural command lines when `/bin/bash`

@@ -192,7 +192,7 @@ describe("DockerSandboxClient ownership", () => {
       if (args[0] === "container" && args[1] === "inspect") {
         return dockerResult({ stdout: encodedInspection(true, [], undefined, "symlink-write") });
       }
-      if (args[0] === "exec" && args.includes("test")) {
+      if (args[0] === "exec" && args.includes("anvia-write-path-check")) {
         return dockerResult({ exitCode: 1 });
       }
       return dockerResult();
@@ -212,7 +212,7 @@ describe("DockerSandboxClient ownership", () => {
       if (args[0] === "container" && args[1] === "inspect") {
         return dockerResult({ stdout: encodedInspection(true, [], undefined, "regular-write") });
       }
-      if (args[0] === "exec" && args.includes("test")) {
+      if (args[0] === "exec" && args.includes("anvia-write-path-check")) {
         return dockerResult({ exitCode: 0 });
       }
       return dockerResult();
@@ -225,6 +225,83 @@ describe("DockerSandboxClient ownership", () => {
     ).resolves.toBeUndefined();
     expect(docker.assert.mock.calls.map(([args]) => args[0])).toContain("cp");
     await sandbox.destroy();
+  });
+
+  it("rejects a symlinked parent before creating directories or copying bytes", async () => {
+    docker.run.mockImplementation(async (args) => {
+      if (args[0] === "container" && args[1] === "inspect") {
+        return dockerResult({ stdout: encodedInspection(true, [], undefined, "parent-write") });
+      }
+      if (args[0] === "exec" && args.includes("anvia-write-path-check")) {
+        return dockerResult({ exitCode: 1 });
+      }
+      return dockerResult();
+    });
+    const sandbox = await new DockerSandboxClient().resumeSandbox({ id: "parent-write" });
+    try {
+      await expect(
+        sandbox.runtime.writeTextFile({ path: "linkdir/new/file.txt", text: "blocked" }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+      expect(
+        docker.run.mock.calls.some(([args]) => args[0] === "exec" && args.includes("mkdir")),
+      ).toBe(false);
+      expect(docker.assert.mock.calls.some(([args]) => args[0] === "cp")).toBe(false);
+    } finally {
+      await sandbox.destroy();
+    }
+  });
+
+  it("fails closed when the path inspection command cannot run", async () => {
+    docker.run.mockImplementation(async (args) => {
+      if (args[0] === "container" && args[1] === "inspect") {
+        return dockerResult({
+          stdout: encodedInspection(true, [], undefined, "failed-write-check"),
+        });
+      }
+      if (args[0] === "exec" && args.includes("anvia-write-path-check")) {
+        return dockerResult({ exitCode: 127 });
+      }
+      return dockerResult();
+    });
+    const sandbox = await new DockerSandboxClient().resumeSandbox({ id: "failed-write-check" });
+    try {
+      await expect(
+        sandbox.runtime.writeTextFile({ path: "new/file.txt", text: "blocked" }),
+      ).rejects.toMatchObject({ code: "docker_command_failed" });
+      expect(
+        docker.run.mock.calls.some(([args]) => args[0] === "exec" && args.includes("mkdir")),
+      ).toBe(false);
+      expect(docker.assert.mock.calls.some(([args]) => args[0] === "cp")).toBe(false);
+    } finally {
+      await sandbox.destroy();
+    }
+  });
+
+  it("rechecks the write path after creating parent directories", async () => {
+    let checks = 0;
+    docker.run.mockImplementation(async (args) => {
+      if (args[0] === "container" && args[1] === "inspect") {
+        return dockerResult({
+          stdout: encodedInspection(true, [], undefined, "changed-write-path"),
+        });
+      }
+      if (args[0] === "exec" && args.includes("anvia-write-path-check")) {
+        return dockerResult({ exitCode: ++checks === 1 ? 0 : 1 });
+      }
+      return dockerResult();
+    });
+    const sandbox = await new DockerSandboxClient().resumeSandbox({ id: "changed-write-path" });
+    try {
+      await expect(
+        sandbox.runtime.writeTextFile({ path: "new/file.txt", text: "blocked" }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+      expect(
+        docker.run.mock.calls.some(([args]) => args[0] === "exec" && args.includes("mkdir")),
+      ).toBe(true);
+      expect(docker.assert.mock.calls.some(([args]) => args[0] === "cp")).toBe(false);
+    } finally {
+      await sandbox.destroy();
+    }
   });
 });
 

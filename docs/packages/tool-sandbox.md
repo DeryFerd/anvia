@@ -68,6 +68,12 @@ example `notes/result.txt`) or absolute paths inside the sandbox workdir (for ex
 `/workspace/notes/result.txt` with the default workdir). Paths outside the sandbox workdir are
 rejected.
 
+File writes also reject symlinks in any destination path component, including dangling links,
+with `invalid_path`. The runtime inspects the path before creating directories and again before
+`docker cp`; a failed inspection command returns `docker_command_failed`. Images must provide
+`sh`. Inspection and copy are separate operations, so a concurrently running container process
+can still race these checks by replacing a path component between them.
+
 With `exec.commands.mode: "allow"`, both `exec_command` and `start_process` reject known shell
 executables by default, including path-qualified names such as `/bin/sh`. To permit an allowlisted
 shell, set `exec.commands.allowShellInterpreters` to the boolean `true`. Omitted or `false` keeps the

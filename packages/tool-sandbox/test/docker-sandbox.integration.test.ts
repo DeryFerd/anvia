@@ -6,6 +6,69 @@ const runDockerTests = process.env.ANVIA_SANDBOX_DOCKER_TESTS === "1";
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 describe.skipIf(!runDockerTests)("Docker sandbox integration", () => {
+  it.each(["node:22-bookworm", "ghcr.io/astral-sh/uv:alpine"])(
+    "rejects symlinked write paths without changing their targets in %s",
+    async (image) => {
+      const client = new DockerSandboxClient();
+      await client.pullImage({ image });
+      const sandbox = await client.createSandbox({
+        id: `vitest-write-links-${Date.now()}`,
+        image,
+        workspace: { type: "ephemeral" },
+        network: { mode: "none" },
+        directories: ["safe"],
+      });
+      try {
+        const setup = await sandbox.runtime.exec({
+          command: "sh",
+          args: [
+            "-c",
+            "mkdir -p /tmp/anvia-outside && printf unchanged > /tmp/anvia-outside/present.txt && ln -s /tmp/anvia-outside linkdir && ln -s /tmp/anvia-missing missingdir && ln -s /tmp/anvia-outside/present.txt leaf",
+          ],
+        });
+        expect(setup).toMatchObject({ status: "exited", exitCode: 0 });
+        for (const filePath of [
+          "leaf",
+          "linkdir/present.txt",
+          "linkdir/created/nested.txt",
+          "missingdir/new.txt",
+        ]) {
+          await expect(
+            sandbox.runtime.writeTextFile({ path: filePath, text: "overwrite" }),
+          ).rejects.toMatchObject({ code: "invalid_path" });
+        }
+        const outside = await sandbox.runtime.exec({
+          command: "cat",
+          args: ["/tmp/anvia-outside/present.txt"],
+        });
+        expect(decoder.decode(outside.stdout)).toBe("unchanged");
+        const unchanged = await sandbox.runtime.exec({
+          command: "sh",
+          args: ["-c", "test ! -e /tmp/anvia-outside/created && test ! -e /tmp/anvia-missing"],
+        });
+        expect(unchanged).toMatchObject({ status: "exited", exitCode: 0 });
+
+        const literalPath = "safe/quotes '\"; $(touch sentinel).txt";
+        await sandbox.runtime.writeTextFile({ path: literalPath, text: "literal name" });
+        await expect(sandbox.runtime.readTextFile({ path: literalPath })).resolves.toBe(
+          "literal name",
+        );
+        await sandbox.runtime.writeTextFile({ path: "new/nested/file.txt", text: "regular write" });
+        await expect(sandbox.runtime.readTextFile({ path: "new/nested/file.txt" })).resolves.toBe(
+          "regular write",
+        );
+        const noInjection = await sandbox.runtime.exec({
+          command: "test",
+          args: ["!", "-e", "sentinel"],
+        });
+        expect(noInjection).toMatchObject({ status: "exited", exitCode: 0 });
+      } finally {
+        await sandbox.destroy();
+      }
+    },
+    120_000,
+  );
+
   it("creates, operates, resumes, and destroys an ephemeral sandbox", async () => {
     const id = `vitest-${Date.now()}`;
     const client = new DockerSandboxClient();

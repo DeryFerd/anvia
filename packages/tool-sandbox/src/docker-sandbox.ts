@@ -55,6 +55,16 @@ const defaultPortWaitIntervalMs = 100;
 const idPattern = /^[a-z0-9](?:[a-z0-9_.-]{0,62})$/;
 const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// The destination is an argv value, never interpolated into shell source.
+const writePathCheckScript = [
+  "set -eu",
+  "target=$1",
+  'while [ -n "$target" ]; do',
+  '  if [ -L "$target" ]; then exit 1; fi',
+  "  target=${target%/*}",
+  "done",
+].join("\n");
+
 const labels = {
   schema: `${labelPrefix}schema`,
   id: `${labelPrefix}id`,
@@ -697,6 +707,7 @@ class DockerSandboxRuntimeImpl {
     const normalized = normalizeSandboxPath(filePath);
     this.assertFileSize(data.byteLength, normalized);
     await this.runOperation(abortSignal, async (effectiveSignal) => {
+      await this.assertWritableSandboxPath(normalized, effectiveSignal);
       await this.mkdir(parentSandboxPath(normalized), effectiveSignal);
       await this.assertWritableSandboxPath(normalized, effectiveSignal);
       const tempDir = await mkdtemp(path.join(os.tmpdir(), "anvia-sandbox-write-"));
@@ -911,11 +922,9 @@ class DockerSandboxRuntimeImpl {
   }
 
   /**
-   * Reject writes whose container destination is an existing symlink. `docker cp`
-   * follows such links, so without this check a symlink planted in the workspace
-   * would redirect the write outside it — mirroring the read path's
-   * `assertCopiedRegularFile` guard. `test ! -L <path>` exits 1 only for symlinks;
-   * any other non-zero status means the check itself failed.
+   * Reject symlinks in every component, including dangling parent links. Check
+   * before mkdir as well as before copying so neither operation follows a link.
+   * This is best-effort: inspection and docker cp are separate operations.
    */
   private async assertWritableSandboxPath(
     sandboxPath: string,
@@ -923,14 +932,19 @@ class DockerSandboxRuntimeImpl {
   ): Promise<void> {
     const result = await this.execCommand(
       {
-        command: "test",
-        args: ["!", "-L", containerPath(this.configuration.workdir, sandboxPath)],
+        command: "sh",
+        args: [
+          "-c",
+          writePathCheckScript,
+          "anvia-write-path-check",
+          containerPath(this.configuration.workdir, sandboxPath),
+        ],
       },
       abortSignal,
     );
     if (result.status === "exited" && result.exitCode === 1) {
       throw new DockerSandboxError(
-        `Sandbox path is a symbolic link: ${sandboxPath}`,
+        `Sandbox path contains a symbolic link: ${sandboxPath}`,
         "invalid_path",
         result,
       );
