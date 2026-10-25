@@ -28,6 +28,7 @@ export type RedisClientLike = {
   expire(key: string, seconds: number): Promise<unknown>;
   del(keys: string | string[]): Promise<unknown>;
   quit?(): Promise<unknown> | unknown;
+  eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>;
 };
 export type RedisVectorClientOptions = {
   client?: RedisClientLike | undefined;

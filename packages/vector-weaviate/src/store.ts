@@ -67,6 +67,7 @@ export class WeaviateVectorStore<
       throw new TypeError(
         "Weaviate document replacement requires collection.data.deleteMany(...) and insertMany(...).",
       );
+    // Weaviate: deleteMany then insertMany. No transaction support, operations are sequential.
     const deletion = await collection.data.deleteMany(
       {
         target: { property: documentIdPropertyKey },

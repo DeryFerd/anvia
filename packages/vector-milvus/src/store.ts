@@ -57,6 +57,7 @@ export class MilvusVectorStore<
     if (options.documents.length === 0) return;
     const client = await this.owner.nativeClient();
     const ids = options.documents.map((document) => JSON.stringify(document.id)).join(", ");
+    // Milvus: delete then insert. No transaction support, operations are sequential.
     await client.delete({
       collection_name: this.options.collectionName,
       filter: `${documentIdFieldName} in [${ids}]`,

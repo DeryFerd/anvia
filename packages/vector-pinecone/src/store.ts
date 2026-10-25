@@ -64,6 +64,7 @@ export class PineconeVectorStore<
     validateDocuments(options.documents, this.options.dimensions);
     if (options.documents.length === 0) return;
     const namespace = await this.namespace();
+    // Pinecone: deleteMany then upsert. No transaction support, operations are sequential.
     await namespace.deleteMany({
       filter: {
         [documentIdMetadataKey]: { $in: options.documents.map((document) => document.id) },

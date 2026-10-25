@@ -16,6 +16,32 @@ import {
   VectorAlgorithms,
   vectorField,
 } from "./types.js";
+
+// Lua script for atomic upsert: DELETE + HSET in single atomic operation
+const ATOMIC_UPSERT_SCRIPT = `
+local indexName = KEYS[1]
+local documentIdField = ARGV[1]
+local keyPrefix = ARGV[2]
+local idsToDelete = cjson.decode(ARGV[3])
+local records = cjson.decode(ARGV[4])
+
+-- Delete existing keys for these document IDs
+for i = 1, #idsToDelete do
+  local query = "@" .. documentIdField .. ":{" .. idsToDelete[i] .. "}"
+  local keys = redis.call("FT.SEARCH", indexName, query, "LIMIT", "0", "1000", "RETURN", "1", "id")
+  for j = 2, #keys, 2 do
+    redis.call("DEL", keys[j])
+  end
+end
+
+-- Insert new records
+for i = 1, #records do
+  local record = records[i]
+  redis.call("HSET", record.key, unpack(record.fields))
+end
+
+return #records
+`;
 export class RedisVectorStore<
   T,
   Metadata extends VectorMetadata = VectorMetadata,
@@ -92,12 +118,17 @@ export class RedisVectorStore<
       redisHashEntries(this.keyPrefix, document, this.options.metadataSchema ?? {}),
     );
     const client = await this.owner.nativeClient();
-    const query = `@${documentIdField}:{${options.documents
-      .map((document) => escapeRedis(document.id))
-      .join("|")}}`;
-    const keys = await matchingKeys(client, this.options.indexName, query);
-    if (keys.length > 0) await client.del(keys);
-    for (const record of records) await client.hSet(record.key, record.fields);
+    const documentIds = options.documents.map((document) => document.id);
+    // Use Lua script for atomic upsert: delete + hset in single atomic operation
+    await client.eval(ATOMIC_UPSERT_SCRIPT, {
+      keys: [this.options.indexName],
+      arguments: [
+        documentIdField,
+        this.keyPrefix,
+        JSON.stringify(documentIds),
+        JSON.stringify(records),
+      ],
+    });
   }
   async search(request: VectorSearchRequest): Promise<Array<VectorSearchResult<T, Metadata>>> {
     validateSearchRequest(request, this.options.dimensions);

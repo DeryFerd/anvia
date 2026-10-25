@@ -77,6 +77,7 @@ export class LanceDBVectorStore<
     if (options.documents.length === 0) return;
     const table = await (await this.owner.nativeClient()).openTable(this.options.tableName);
     const ids = options.documents.map((document) => sqlString(document.id)).join(", ");
+    // LanceDB: delete then add. No transaction support, but operations are sequential.
     await table.delete(`${documentIdColumn} IN (${ids})`);
     const rows = options.documents.flatMap((document) => lanceRows(document));
     if (rows.length > 0) await table.add(rows, options.providerOptions);

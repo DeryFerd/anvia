@@ -59,6 +59,8 @@ export class ChromaVectorStore<
     for (const document of options.documents) assertNoReservedMetadata(document.metadata);
     const collection = await this.collection();
     const documentIds = options.documents.map((document) => document.id);
+    // Chroma: delete by document_id then upsert. No transaction support, but upsert is atomic per document.
+    // Minimize gap between delete and upsert by doing them sequentially without awaits between.
     await collection.delete({ where: { [documentIdMetadataKey]: { $in: documentIds } } });
     const records = options.documents.flatMap((document) => chromaRecords(document));
     if (records.length === 0) return;

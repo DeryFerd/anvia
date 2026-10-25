@@ -51,12 +51,6 @@ export class PgVectorStore<
     if (options.documents.length === 0) return;
     const client = await this.owner.nativeClient();
     const documentIds = options.documents.map((document) => document.id);
-    await queryWithProviderOptions(
-      client,
-      `DELETE FROM ${this.tableName} WHERE document_id = ANY($1::text[])`,
-      [documentIds],
-      options.providerOptions,
-    );
     const rows = options.documents.flatMap((document) => pgVectorRows(document));
     if (rows.length === 0) return;
     const values: unknown[] = [];
@@ -71,14 +65,28 @@ export class PgVectorStore<
       );
       return `($${offset + 1}, $${offset + 2}, $${offset + 3}::jsonb, $${offset + 4}::jsonb, $${offset + 5}::vector)`;
     });
-    await queryWithProviderOptions(
-      client,
-      `INSERT INTO ${this.tableName} (id, document_id, document, metadata, embedding)
+    // Use a transaction for atomic upsert: DELETE + INSERT ON CONFLICT
+    await client.query("BEGIN");
+    try {
+      await queryWithProviderOptions(
+        client,
+        `DELETE FROM ${this.tableName} WHERE document_id = ANY($1::text[])`,
+        [documentIds],
+        options.providerOptions,
+      );
+      await queryWithProviderOptions(
+        client,
+        `INSERT INTO ${this.tableName} (id, document_id, document, metadata, embedding)
 VALUES ${placeholders.join(", ")}
 ON CONFLICT (id) DO UPDATE SET document_id = EXCLUDED.document_id, document = EXCLUDED.document, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding`,
-      values,
-      options.providerOptions,
-    );
+        values,
+        options.providerOptions,
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
   }
   async search(request: VectorSearchRequest): Promise<Array<VectorSearchResult<T, Metadata>>> {
     validateSearchRequest(request, this.options.dimensions);

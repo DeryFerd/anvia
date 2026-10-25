@@ -27,11 +27,13 @@ describe("RedisVectorClient", () => {
           }
         : { documents: [{ id: "key" }] },
     );
+    const evalFn = vi.fn(async () => 1);
     const client: RedisClientLike = {
       ft: { create: vi.fn(async () => undefined), info: vi.fn(async () => ({})), search },
       hSet: vi.fn(async () => undefined),
       expire: vi.fn(async () => undefined),
       del: vi.fn(async () => undefined),
+      eval: evalFn,
     };
     const store = new RedisVectorClient({ client }).vectorStore<{ text: string }>({
       indexName: "docs",
@@ -44,8 +46,23 @@ describe("RedisVectorClient", () => {
         { id: "doc", document: { text: "cat" }, embeddings: [{ document: "cat", vector: [1, 0] }] },
       ],
     });
-    expect(client.del).toHaveBeenCalledWith(["key"]);
-    expect(client.hSet).toHaveBeenCalled();
+    // Verify Lua script was called for atomic upsert
+    expect(evalFn).toHaveBeenCalledTimes(1);
+    const scriptArg = evalFn.mock.calls[0][0];
+    expect(scriptArg).toContain("local indexName = KEYS[1]");
+    expect(scriptArg).toContain("local documentIdField = ARGV[1]");
+    expect(scriptArg).toContain("local keyPrefix = ARGV[2]");
+    expect(scriptArg).toContain("local idsToDelete = cjson.decode(ARGV[3])");
+    expect(scriptArg).toContain("local records = cjson.decode(ARGV[4])");
+    expect(evalFn.mock.calls[0][1]).toEqual({
+      keys: ["docs"],
+      arguments: expect.arrayContaining([
+        "__anvia_document_id",
+        "anvia:docs:",
+        '["doc"]',
+        expect.stringContaining("doc"),
+      ]),
+    });
     await store.search({ vector: [1, 0], topK: 1 });
     expect(search.mock.calls.some(([, query]) => query.includes("KNN"))).toBe(true);
   });
@@ -72,11 +89,13 @@ describe("RedisVectorClient", () => {
           }
         : { documents: [] },
     );
+    const evalFn = vi.fn(async () => 1);
     const client: RedisClientLike = {
       ft: { create: vi.fn(async () => undefined), info, search },
       hSet: vi.fn(async () => undefined),
       expire: vi.fn(async () => undefined),
       del: vi.fn(async () => undefined),
+      eval: evalFn,
     };
     const store = new RedisVectorClient({ client }).vectorStore<string>({
       indexName: "docs",
@@ -103,14 +122,23 @@ describe("RedisVectorClient", () => {
         },
       ],
     });
-    expect(client.hSet).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        __anvia_metadata: JSON.stringify({ tenantId: "tenant-1", priority: 2 }),
-        tenantId: "s:tenant-1",
-        priority: 2,
-      }),
-    );
+    // Verify Lua script was called for atomic upsert
+    expect(evalFn).toHaveBeenCalledTimes(1);
+    const scriptArg = evalFn.mock.calls[0][0];
+    expect(scriptArg).toContain("local indexName = KEYS[1]");
+    expect(scriptArg).toContain("local documentIdField = ARGV[1]");
+    expect(scriptArg).toContain("local keyPrefix = ARGV[2]");
+    expect(scriptArg).toContain("local idsToDelete = cjson.decode(ARGV[3])");
+    expect(scriptArg).toContain("local records = cjson.decode(ARGV[4])");
+    expect(evalFn.mock.calls[0][1]).toEqual({
+      keys: ["docs"],
+      arguments: expect.arrayContaining([
+        "__anvia_document_id",
+        "anvia:docs:",
+        '["doc"]',
+        expect.stringContaining("tenantId"),
+      ]),
+    });
     await expect(
       store.search({
         vector: [1, 0],
@@ -131,6 +159,7 @@ describe("RedisVectorClient", () => {
       hSet: vi.fn(async () => undefined),
       expire: vi.fn(async () => undefined),
       del: vi.fn(async () => undefined),
+      eval: vi.fn(async () => undefined),
     };
     const store = new RedisVectorClient({ client }).vectorStore({
       indexName: "docs",
@@ -171,6 +200,7 @@ describe("RedisVectorClient", () => {
       hSet: vi.fn(async () => undefined),
       expire: vi.fn(async () => undefined),
       del: vi.fn(async () => undefined),
+      eval: vi.fn(async () => undefined),
     };
     const store = new RedisVectorClient({ client }).vectorStore<string>({
       indexName: "docs",
