@@ -40,6 +40,8 @@ export type EventStreamReadOptions = {
   onParseError?: (error: EventStreamParseError) => void;
   /** Throw the parse error instead of skipping malformed frames. */
   strict?: boolean;
+  /** Maximum line length in bytes. Exceeding this aborts the stream. Default: 10MB. */
+  maxLineLength?: number | undefined;
 };
 
 /** A dispatched Server-Sent Event with its parsed JSON payload. */
@@ -58,7 +60,7 @@ export async function* readJsonlStream<TEvent>(
   options: EventStreamReadOptions = {},
 ): AsyncIterable<TEvent> {
   let lineNumber = 0;
-  for await (const line of readLines(stream)) {
+  for await (const line of readLines(stream, { maxLineLength: options.maxLineLength })) {
     lineNumber += 1;
     const raw = line.trim();
     if (raw.length === 0) continue;
@@ -103,7 +105,7 @@ export async function* readSseFrames<TEvent>(
     return frame;
   }
 
-  for await (const line of readLines(stream)) {
+  for await (const line of readLines(stream, { maxLineLength: options.maxLineLength })) {
     if (line === "") {
       const frame = dispatch();
       if (frame !== undefined) yield frame;
@@ -130,12 +132,16 @@ export async function* readSseFrames<TEvent>(
 }
 
 /** Splits a byte stream into lines terminated by CRLF, LF, or a bare CR. */
-async function* readLines(stream: ReadableStream<Uint8Array>): AsyncIterable<string> {
+async function* readLines(
+  stream: ReadableStream<Uint8Array>,
+  options: { maxLineLength?: number | undefined } = {},
+): AsyncIterable<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let skipLeadingLf = false;
   let completed = false;
+  const maxLineLength = options.maxLineLength ?? 10_000_000; // 10 MB default
 
   function* split(text: string): Iterable<string> {
     let chunk = text;
@@ -148,7 +154,17 @@ async function* readLines(stream: ReadableStream<Uint8Array>): AsyncIterable<str
     buffer += chunk;
     for (; index < buffer.length; index += 1) {
       const char = buffer.charCodeAt(index);
-      if (char !== 10 && char !== 13) continue;
+      if (char !== 10 && char !== 13) {
+        // Check if buffer exceeds maxLineLength before a newline is found
+        if (buffer.length - start > maxLineLength) {
+          throw new EventStreamParseError({
+            format: "jsonl",
+            raw: buffer.slice(start, start + Math.min(100, buffer.length - start)) + "...",
+            cause: new Error(`Line exceeds maximum length of ${maxLineLength} bytes`),
+          });
+        }
+        continue;
+      }
       yield buffer.slice(start, index);
       if (char === 13) {
         if (index + 1 === buffer.length) skipLeadingLf = true;
