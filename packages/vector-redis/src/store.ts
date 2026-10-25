@@ -219,9 +219,6 @@ function distanceName(metric: RedisVectorStoreOptions["metric"]): RedisDistance 
   if (metric === "dotProduct") return "IP";
   return "COSINE";
 }
-function escapeRedis(value: string): string {
-  return value.replace(/([,.<>{}[\]"':;!@#$%^&*()\-+=~|\\/ ])/g, "\\$1");
-}
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     const error = new Error("The operation was aborted.");
@@ -250,38 +247,6 @@ function validateDocuments<T, Metadata extends VectorMetadata>(
         throw new Error(`Vector for document ${document.id} must contain only finite numbers`);
   }
 }
-
-async function matchingKeys(
-  client: Awaited<ReturnType<RedisVectorClient["nativeClient"]>>,
-  indexName: string,
-  query: string,
-): Promise<string[]> {
-  const keys: string[] = [];
-  const pageSize = 1_000;
-  for (let from = 0; ; from += pageSize) {
-    const page = (await client.ft.search(indexName, query, {
-      LIMIT: { from, size: pageSize },
-      RETURN: [],
-    })) as { total?: number; documents?: Array<{ id?: string }> };
-    const documents = page.documents ?? [];
-    keys.push(
-      ...documents.flatMap((document) => (typeof document.id === "string" ? [document.id] : [])),
-    );
-    if (
-      documents.length < pageSize ||
-      (page.total !== undefined && from + documents.length >= page.total)
-    )
-      return keys;
-  }
-}
-
-function isMissingIndexError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /(?:unknown index|no such index|index .* does not exist)/i.test(error.message)
-  );
-}
-
 function validateSearchRequest(request: VectorSearchRequest, dimensions: number): void {
   throwIfAborted(request.abortSignal);
   if (!Number.isSafeInteger(request.topK) || request.topK < 1)
@@ -291,4 +256,11 @@ function validateSearchRequest(request: VectorSearchRequest, dimensions: number)
   if (request.vector.length !== dimensions) throw new Error("Vector dimension mismatch for query");
   if (!request.vector.every(Number.isFinite))
     throw new Error("Vector search query must contain only finite numbers");
+}
+
+function isMissingIndexError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /(?:unknown index|no such index|index .* does not exist)/i.test(error.message)
+  );
 }
