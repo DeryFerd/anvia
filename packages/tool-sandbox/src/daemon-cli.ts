@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 import os from "node:os";
 import path from "node:path";
-import { SandboxDaemon } from "./daemon/index";
+import { checkDaemon, requiredFeatures } from "./daemon-check";
+import { desktopOptionsFromEnv } from "./daemon-config";
+import { SandboxDaemon, type SandboxDaemonOptions } from "./daemon/index";
 
 const usage = `anvia-sandbox-daemon
 
 Runs inside a sandbox, dials out to a control plane, and executes sandbox operations locally.
+
+Options:
+  --check                  Report what this image offers (terminals, desktop) and exit, without
+                           connecting. No hub URL or token needed.
+  --require=<features>     With --check: exit 1 unless these are available (terminal, desktop,
+                           comma-separated).
+  -h, --help               Show this help.
 
 Environment:
   ANVIA_CONTROL_URL        ws:// or wss:// URL of the hub (required)
@@ -13,6 +22,13 @@ Environment:
   ANVIA_SANDBOX_WORKDIR    Workspace directory (default: current directory)
   ANVIA_SANDBOX_STATE_DIR  Operation dedup table (default: <tmpdir>/anvia-sandbox-daemon)
   ANVIA_SANDBOX_TERMINAL   Set to 0 to turn interactive terminals off (default: on when node-pty loads)
+  ANVIA_SANDBOX_DESKTOP    Set to 0 to turn the desktop off (default: on when its programs are installed)
+  ANVIA_SANDBOX_DESKTOP_BACKEND          auto (default), xvnc, or xvfb
+  ANVIA_SANDBOX_DESKTOP_RESOLUTION       Starting size, like 1440x900 (default 1280x800)
+  ANVIA_SANDBOX_DESKTOP_MAX_RESOLUTION   Largest size a resize may ask for (default 3840x2160)
+  ANVIA_SANDBOX_DESKTOP_DISPLAY          X display, like :99 (default)
+  ANVIA_SANDBOX_DESKTOP_VNC_PORT         Loopback VNC port (default 5900)
+  ANVIA_SANDBOX_DESKTOP_WINDOW_MANAGER   Window manager command, or "none" (default: openbox-session, or openbox)
   ANVIA_SANDBOX_COMMAND_TIMEOUT_MS, ANVIA_SANDBOX_MAX_OUTPUT_BYTES,
   ANVIA_SANDBOX_MAX_FILE_BYTES, ANVIA_SANDBOX_MAX_PROCESSES   Optional limits
 `;
@@ -27,9 +43,37 @@ function integer(name: string): number | undefined {
   return value;
 }
 
+async function check(): Promise<void> {
+  const required = requiredFeatures(process.argv);
+  const options: Parameters<typeof checkDaemon>[0] = {
+    terminal: process.env.ANVIA_SANDBOX_TERMINAL === "0" ? false : {},
+  };
+  const desktop = desktopOptionsFromEnv(process.env);
+  if (desktop !== undefined) options.desktop = desktop;
+  const result = await checkDaemon(
+    options,
+    path.resolve(process.env.ANVIA_SANDBOX_WORKDIR ?? process.cwd()),
+    required,
+  );
+  const lines = [
+    `capabilities: ${result.capabilities.join(", ") || "none"}`,
+    ...result.notes.map((note) => `  ${note}`),
+  ];
+  for (const name of result.missing) lines.push(`missing: ${name} is required but not available`);
+  process.stdout.write(`${lines.join("\n")}\n`);
+  if (result.missing.length > 0) process.exitCode = 1;
+}
+
 function main(): void {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     process.stdout.write(usage);
+    return;
+  }
+  if (process.argv.includes("--check")) {
+    check().catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 2;
+    });
     return;
   }
   const controlUrl = process.env.ANVIA_CONTROL_URL;
@@ -46,7 +90,7 @@ function main(): void {
     ...optional("maxFileBytes", integer("ANVIA_SANDBOX_MAX_FILE_BYTES")),
     ...optional("maxProcesses", integer("ANVIA_SANDBOX_MAX_PROCESSES")),
   };
-  const daemon = new SandboxDaemon({
+  const options: SandboxDaemonOptions = {
     controlUrl,
     token,
     workdir: path.resolve(process.env.ANVIA_SANDBOX_WORKDIR ?? process.cwd()),
@@ -57,7 +101,10 @@ function main(): void {
     terminal: process.env.ANVIA_SANDBOX_TERMINAL === "0" ? false : {},
     onLog: (level, message) =>
       process.stderr.write(`[anvia-sandbox-daemon] ${level}: ${message}\n`),
-  });
+  };
+  const desktop = desktopOptionsFromEnv(process.env);
+  if (desktop !== undefined) options.desktop = desktop;
+  const daemon = new SandboxDaemon(options);
   daemon.start();
 
   let stopping = false;
